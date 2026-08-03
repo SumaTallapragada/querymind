@@ -16,6 +16,8 @@ dependencies = [
     "pydantic-settings>=2.5.0,<3.0.0",
     "python-dotenv>=1.0.1,<2.0.0",
     "structlog>=24.4.0,<25.0.0",
+    "faker>=40.36.0,<41.0.0",
+    "pyyaml>=6.0.3,<7.0.0",
 ]
 
 [dependency-groups]
@@ -27,6 +29,7 @@ dev = [
     "pytest-cov>=5.0.0,<6.0.0",
     "httpx>=0.27.0,<0.28.0",
     "asgi-lifespan>=2.1.0,<3.0.0",
+    "types-pyyaml>=6.0.12.20260724",
 ]
 
 [build-system]

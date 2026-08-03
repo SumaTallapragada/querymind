@@ -1,0 +1,1078 @@
+# Business metadata for the QueryMind schema.
+#
+# This file is the independent metadata source referenced throughout the
+# Metadata Engine: it is never hardcoded into the ORM models
+# (src/querymind/models/) and is loaded at runtime by
+# querymind.metadata.loader / querymind.metadata.dictionary.
+#
+# Content is transcribed verbatim from the approved Phase 2 design
+# document (docs/phase2_database_design.md, Section 5 "Data Dictionary"
+# and Section 3 table purposes) — it is already-approved business content
+# being re-encoded into a machine-readable source, not new authorship.
+#
+# Schema:
+#   tables:
+#     <table_name>:
+#       description: <str>
+#       synonyms: [<str>, ...]
+#   columns:
+#     <table_name>.<column_name>:
+#       description: <str>
+#       example_value: <str> | null
+#       synonyms: [<str>, ...]
+#       display_name: <str>
+#       search_keywords: [<str>, ...]
+#       is_sensitive: <bool>
+
+tables:
+  customers:
+    description: "One row per registered customer account — the anchor entity for all customer analytics (lifetime value, segmentation, retention)."
+    synonyms: ["clients", "buyers", "accounts", "customer base"]
+  customer_addresses:
+    description: "A customer's saved address book (billing/shipping defaults for autofill and customer-geography analytics)."
+    synonyms: ["addresses", "address book", "shipping addresses", "billing addresses"]
+  product_categories:
+    description: "Self-referencing hierarchy for the product taxonomy (e.g. Electronics -> Computers -> Laptops)."
+    synonyms: ["categories", "departments", "product taxonomy"]
+  suppliers:
+    description: "External vendors who manufacture/wholesale the products QueryMind resells."
+    synonyms: ["vendors", "manufacturers", "providers"]
+  products:
+    description: "The sellable catalog item — the anchor entity for product/category/margin analytics."
+    synonyms: ["catalog", "items", "SKUs", "merchandise"]
+  warehouses:
+    description: "Physical fulfillment centers that hold inventory and originate shipments."
+    synonyms: ["fulfillment centers", "distribution centers", "DCs"]
+  inventory:
+    description: "Current stock level of one product at one warehouse — the anchor entity for inventory-health analytics."
+    synonyms: ["stock", "stock levels", "on-hand inventory"]
+  orders:
+    description: "One row per customer order — the central fact table of the schema."
+    synonyms: ["purchases", "sales", "transactions"]
+  order_items:
+    description: "One row per product line within an order."
+    synonyms: ["line items", "order lines", "purchased items"]
+  payments:
+    description: "One row per payment transaction attempt against an order."
+    synonyms: ["transactions", "charges", "payment transactions"]
+  shipments:
+    description: "One row per physical shipment fulfilling all or part of an order."
+    synonyms: ["deliveries", "parcels", "fulfillments"]
+  product_reviews:
+    description: "Customer-authored product feedback, optionally linked to a verified purchase."
+    synonyms: ["reviews", "ratings", "feedback"]
+  promotions:
+    description: "Discount codes/campaigns that can be applied to an order."
+    synonyms: ["coupons", "discounts", "campaigns", "sales"]
+  returns:
+    description: "One row per return request against a purchased line item."
+    synonyms: ["RMAs", "refund requests", "returned items"]
+
+columns:
+  # ---------------------------------------------------------------- customers
+  customers.customer_id:
+    description: "Internal surrogate identifier, never shown to users."
+    example_value: "48213"
+    synonyms: []
+    display_name: "Customer ID"
+    search_keywords: ["customer_id", "customers.customer_id", "internal id"]
+    is_sensitive: false
+  customers.customer_number:
+    description: "The customer's public-facing account number."
+    example_value: "CUST-00004532"
+    synonyms: ["customer ID", "account number", "client number"]
+    display_name: "Customer Number"
+    search_keywords: ["customer_number", "customers.customer_number", "account number"]
+    is_sensitive: false
+  customers.first_name:
+    description: "Customer's given name."
+    example_value: "Jane"
+    synonyms: ["first name", "given name"]
+    display_name: "First Name"
+    search_keywords: ["first_name", "customers.first_name", "given name"]
+    is_sensitive: true
+  customers.last_name:
+    description: "Customer's family name."
+    example_value: "Smith"
+    synonyms: ["last name", "surname", "family name"]
+    display_name: "Last Name"
+    search_keywords: ["last_name", "customers.last_name", "surname"]
+    is_sensitive: true
+  customers.email:
+    description: "Account email address."
+    example_value: "jane.smith@example.com"
+    synonyms: ["email address", "contact email"]
+    display_name: "Email Address"
+    search_keywords: ["email", "customers.email", "email address"]
+    is_sensitive: true
+  customers.phone:
+    description: "Contact phone number."
+    example_value: "+1-555-201-4488"
+    synonyms: ["phone number", "contact number", "mobile"]
+    display_name: "Phone Number"
+    search_keywords: ["phone", "customers.phone", "contact number"]
+    is_sensitive: true
+  customers.date_of_birth:
+    description: "Customer's birth date."
+    example_value: "1988-04-12"
+    synonyms: ["birthday", "DOB"]
+    display_name: "Date of Birth"
+    search_keywords: ["date_of_birth", "customers.date_of_birth", "birthday", "dob"]
+    is_sensitive: true
+  customers.gender:
+    description: "Self-described gender."
+    example_value: "female"
+    synonyms: []
+    display_name: "Gender"
+    search_keywords: ["gender", "customers.gender"]
+    is_sensitive: true
+  customers.customer_segment:
+    description: "Tier used for marketing/pricing treatment."
+    example_value: "vip"
+    synonyms: ["tier", "customer tier", "membership level"]
+    display_name: "Customer Segment"
+    search_keywords: ["customer_segment", "customers.customer_segment", "tier", "membership level"]
+    is_sensitive: false
+  customers.signup_date:
+    description: "Date the account was created."
+    example_value: "2024-11-02"
+    synonyms: ["join date", "registration date", "sign-up date", "when they became a customer"]
+    display_name: "Signup Date"
+    search_keywords: ["signup_date", "customers.signup_date", "join date", "registration date"]
+    is_sensitive: false
+  customers.signup_channel:
+    description: "Acquisition channel at registration."
+    example_value: "web"
+    synonyms: ["acquisition channel", "signup source"]
+    display_name: "Signup Channel"
+    search_keywords: ["signup_channel", "customers.signup_channel", "acquisition channel"]
+    is_sensitive: false
+  customers.is_active:
+    description: "Whether the account is currently active (soft delete)."
+    example_value: "true"
+    synonyms: ["active customer", "enabled"]
+    display_name: "Active"
+    search_keywords: ["is_active", "customers.is_active", "active customer"]
+    is_sensitive: false
+  customers.created_at:
+    description: "Row creation timestamp (system)."
+    example_value: "2024-11-02T09:15:00Z"
+    synonyms: ["record created", "system timestamp"]
+    display_name: "Created At"
+    search_keywords: ["created_at", "customers.created_at"]
+    is_sensitive: false
+  customers.updated_at:
+    description: "Row last-modified timestamp (system)."
+    example_value: "2026-01-10T14:02:00Z"
+    synonyms: ["last modified", "last updated"]
+    display_name: "Updated At"
+    search_keywords: ["updated_at", "customers.updated_at"]
+    is_sensitive: false
+
+  # -------------------------------------------------------- customer_addresses
+  customer_addresses.address_id:
+    description: "Surrogate identifier."
+    example_value: "9931"
+    synonyms: []
+    display_name: "Address ID"
+    search_keywords: ["address_id", "customer_addresses.address_id"]
+    is_sensitive: false
+  customer_addresses.customer_id:
+    description: "Owning customer."
+    example_value: "48213"
+    synonyms: []
+    display_name: "Customer ID"
+    search_keywords: ["customer_id", "customer_addresses.customer_id"]
+    is_sensitive: false
+  customer_addresses.address_type:
+    description: "Whether this address is for billing or shipping."
+    example_value: "shipping"
+    synonyms: ["address type"]
+    display_name: "Address Type"
+    search_keywords: ["address_type", "customer_addresses.address_type"]
+    is_sensitive: false
+  customer_addresses.is_default:
+    description: "Whether this is the customer's default address of its type."
+    example_value: "true"
+    synonyms: ["primary address", "default address"]
+    display_name: "Default Address"
+    search_keywords: ["is_default", "customer_addresses.is_default", "primary address"]
+    is_sensitive: false
+  customer_addresses.line1:
+    description: "Street address line 1."
+    example_value: "221B Baker Street"
+    synonyms: ["street address", "address line 1"]
+    display_name: "Address Line 1"
+    search_keywords: ["line1", "customer_addresses.line1", "street address"]
+    is_sensitive: true
+  customer_addresses.line2:
+    description: "Street address line 2 (apt/suite)."
+    example_value: "Apt 4"
+    synonyms: ["apartment", "suite", "unit"]
+    display_name: "Address Line 2"
+    search_keywords: ["line2", "customer_addresses.line2", "apartment", "suite"]
+    is_sensitive: true
+  customer_addresses.city:
+    description: "City."
+    example_value: "Austin"
+    synonyms: ["city"]
+    display_name: "City"
+    search_keywords: ["city", "customer_addresses.city"]
+    is_sensitive: false
+  customer_addresses.state_province:
+    description: "State or province."
+    example_value: "TX"
+    synonyms: ["state", "province", "region"]
+    display_name: "State / Province"
+    search_keywords: ["state_province", "customer_addresses.state_province", "state", "province"]
+    is_sensitive: false
+  customer_addresses.postal_code:
+    description: "Postal/ZIP code."
+    example_value: "73301"
+    synonyms: ["zip code", "postal code"]
+    display_name: "Postal Code"
+    search_keywords: ["postal_code", "customer_addresses.postal_code", "zip code"]
+    is_sensitive: true
+  customer_addresses.country_code:
+    description: "ISO-3166 alpha-2 country code."
+    example_value: "US"
+    synonyms: ["country"]
+    display_name: "Country"
+    search_keywords: ["country_code", "customer_addresses.country_code", "country"]
+    is_sensitive: false
+  customer_addresses.created_at:
+    description: "Row creation timestamp."
+    example_value: "2024-11-02T09:16:00Z"
+    synonyms: []
+    display_name: "Created At"
+    search_keywords: ["created_at", "customer_addresses.created_at"]
+    is_sensitive: false
+
+  # ------------------------------------------------------- product_categories
+  product_categories.category_id:
+    description: "Surrogate identifier."
+    example_value: "14"
+    synonyms: []
+    display_name: "Category ID"
+    search_keywords: ["category_id", "product_categories.category_id"]
+    is_sensitive: false
+  product_categories.parent_category_id:
+    description: "Parent category, if any (NULL = top-level)."
+    example_value: "3"
+    synonyms: ["parent category"]
+    display_name: "Parent Category ID"
+    search_keywords: ["parent_category_id", "product_categories.parent_category_id", "parent category"]
+    is_sensitive: false
+  product_categories.category_name:
+    description: "Display name of the category."
+    example_value: "Laptops"
+    synonyms: ["category", "product category", "department"]
+    display_name: "Category Name"
+    search_keywords: ["category_name", "product_categories.category_name", "category", "department"]
+    is_sensitive: false
+  product_categories.category_path:
+    description: "Full breadcrumb path from root."
+    example_value: "Electronics/Computers/Laptops"
+    synonyms: ["category path", "breadcrumb"]
+    display_name: "Category Path"
+    search_keywords: ["category_path", "product_categories.category_path", "breadcrumb"]
+    is_sensitive: false
+  product_categories.is_active:
+    description: "Whether the category is currently in use."
+    example_value: "true"
+    synonyms: []
+    display_name: "Active"
+    search_keywords: ["is_active", "product_categories.is_active"]
+    is_sensitive: false
+  product_categories.created_at:
+    description: "Row creation timestamp."
+    example_value: "2023-01-15T00:00:00Z"
+    synonyms: []
+    display_name: "Created At"
+    search_keywords: ["created_at", "product_categories.created_at"]
+    is_sensitive: false
+
+  # ------------------------------------------------------------------ suppliers
+  suppliers.supplier_id:
+    description: "Surrogate identifier."
+    example_value: "77"
+    synonyms: []
+    display_name: "Supplier ID"
+    search_keywords: ["supplier_id", "suppliers.supplier_id"]
+    is_sensitive: false
+  suppliers.supplier_code:
+    description: "Business identifier for the supplier."
+    example_value: "SUP-0042"
+    synonyms: ["supplier ID", "vendor code"]
+    display_name: "Supplier Code"
+    search_keywords: ["supplier_code", "suppliers.supplier_code", "vendor code"]
+    is_sensitive: false
+  suppliers.supplier_name:
+    description: "Supplier's company name."
+    example_value: "Acme Manufacturing Corp"
+    synonyms: ["supplier", "vendor", "manufacturer", "provider"]
+    display_name: "Supplier Name"
+    search_keywords: ["supplier_name", "suppliers.supplier_name", "vendor", "manufacturer"]
+    is_sensitive: false
+  suppliers.contact_email:
+    description: "Primary contact email."
+    example_value: "sales@acmemfg.com"
+    synonyms: ["vendor contact", "supplier email"]
+    display_name: "Contact Email"
+    search_keywords: ["contact_email", "suppliers.contact_email", "vendor contact"]
+    is_sensitive: true
+  suppliers.contact_phone:
+    description: "Primary contact phone."
+    example_value: "+1-555-909-1200"
+    synonyms: ["vendor phone"]
+    display_name: "Contact Phone"
+    search_keywords: ["contact_phone", "suppliers.contact_phone", "vendor phone"]
+    is_sensitive: true
+  suppliers.country_code:
+    description: "Country the supplier operates from."
+    example_value: "CN"
+    synonyms: ["supplier country", "country of origin"]
+    display_name: "Country"
+    search_keywords: ["country_code", "suppliers.country_code", "country of origin"]
+    is_sensitive: false
+  suppliers.lead_time_days:
+    description: "Average days from purchase order to warehouse receipt."
+    example_value: "18"
+    synonyms: ["lead time", "delivery time", "fulfillment time"]
+    display_name: "Lead Time (Days)"
+    search_keywords: ["lead_time_days", "suppliers.lead_time_days", "lead time"]
+    is_sensitive: false
+  suppliers.rating:
+    description: "Internal quality/reliability score (0-5)."
+    example_value: "4.35"
+    synonyms: ["supplier rating", "quality score", "vendor score"]
+    display_name: "Supplier Rating"
+    search_keywords: ["rating", "suppliers.rating", "quality score"]
+    is_sensitive: false
+  suppliers.is_active:
+    description: "Whether QueryMind still sources from this supplier."
+    example_value: "true"
+    synonyms: ["active supplier"]
+    display_name: "Active"
+    search_keywords: ["is_active", "suppliers.is_active", "active supplier"]
+    is_sensitive: false
+  suppliers.created_at:
+    description: "Row creation timestamp."
+    example_value: "2022-06-01T00:00:00Z"
+    synonyms: ["onboarding date (approx.)"]
+    display_name: "Created At"
+    search_keywords: ["created_at", "suppliers.created_at"]
+    is_sensitive: false
+
+  # ------------------------------------------------------------------- products
+  products.product_id:
+    description: "Surrogate identifier."
+    example_value: "10234"
+    synonyms: []
+    display_name: "Product ID"
+    search_keywords: ["product_id", "products.product_id"]
+    is_sensitive: false
+  products.sku:
+    description: "Stock-keeping unit — the business identifier for a product."
+    example_value: "SKU-10234"
+    synonyms: ["SKU", "item number", "product code"]
+    display_name: "SKU"
+    search_keywords: ["sku", "products.sku", "item number"]
+    is_sensitive: false
+  products.product_name:
+    description: "Display/catalog name."
+    example_value: "Wireless Mouse Pro"
+    synonyms: ["product name", "item name"]
+    display_name: "Product Name"
+    search_keywords: ["product_name", "products.product_name", "item name"]
+    is_sensitive: false
+  products.category_id:
+    description: "Category this product belongs to."
+    example_value: "14"
+    synonyms: []
+    display_name: "Category ID"
+    search_keywords: ["category_id", "products.category_id"]
+    is_sensitive: false
+  products.supplier_id:
+    description: "Supplier this product is sourced from."
+    example_value: "77"
+    synonyms: []
+    display_name: "Supplier ID"
+    search_keywords: ["supplier_id", "products.supplier_id"]
+    is_sensitive: false
+  products.description:
+    description: "Marketing/catalog description."
+    example_value: "Ergonomic wireless mouse with..."
+    synonyms: ["product description"]
+    display_name: "Description"
+    search_keywords: ["description", "products.description"]
+    is_sensitive: false
+  products.unit_price:
+    description: "Current catalog/list selling price."
+    example_value: "29.99"
+    synonyms: ["price", "list price", "catalog price", "selling price (current)"]
+    display_name: "Unit Price"
+    search_keywords: ["unit_price", "products.unit_price", "price", "list price"]
+    is_sensitive: false
+  products.cost_price:
+    description: "What QueryMind pays the supplier per unit."
+    example_value: "11.50"
+    synonyms: ["cost", "supplier cost", "unit cost", "COGS"]
+    display_name: "Cost Price"
+    search_keywords: ["cost_price", "products.cost_price", "cost", "cogs"]
+    is_sensitive: false
+  products.weight_kg:
+    description: "Shipping weight."
+    example_value: "0.120"
+    synonyms: ["weight"]
+    display_name: "Weight (kg)"
+    search_keywords: ["weight_kg", "products.weight_kg", "weight"]
+    is_sensitive: false
+  products.is_active:
+    description: "Whether the product is currently sellable (not discontinued)."
+    example_value: "true"
+    synonyms: ["active product", "in catalog"]
+    display_name: "Active"
+    search_keywords: ["is_active", "products.is_active", "active product"]
+    is_sensitive: false
+  products.launch_date:
+    description: "Date the product was first offered for sale."
+    example_value: "2025-03-01"
+    synonyms: ["launch date", "release date"]
+    display_name: "Launch Date"
+    search_keywords: ["launch_date", "products.launch_date", "release date"]
+    is_sensitive: false
+  products.created_at:
+    description: "Row creation timestamp."
+    example_value: "2025-02-20T00:00:00Z"
+    synonyms: []
+    display_name: "Created At"
+    search_keywords: ["created_at", "products.created_at"]
+    is_sensitive: false
+  products.updated_at:
+    description: "Row last-modified timestamp."
+    example_value: "2026-01-05T00:00:00Z"
+    synonyms: []
+    display_name: "Updated At"
+    search_keywords: ["updated_at", "products.updated_at"]
+    is_sensitive: false
+
+  # ----------------------------------------------------------------- warehouses
+  warehouses.warehouse_id:
+    description: "Surrogate identifier."
+    example_value: "3"
+    synonyms: []
+    display_name: "Warehouse ID"
+    search_keywords: ["warehouse_id", "warehouses.warehouse_id"]
+    is_sensitive: false
+  warehouses.warehouse_code:
+    description: "Business identifier for the facility."
+    example_value: "WH-EAST-01"
+    synonyms: ["warehouse ID", "fulfillment center code"]
+    display_name: "Warehouse Code"
+    search_keywords: ["warehouse_code", "warehouses.warehouse_code"]
+    is_sensitive: false
+  warehouses.warehouse_name:
+    description: "Display name."
+    example_value: "East Coast Distribution Center"
+    synonyms: ["warehouse", "fulfillment center", "DC", "distribution center"]
+    display_name: "Warehouse Name"
+    search_keywords: ["warehouse_name", "warehouses.warehouse_name", "distribution center"]
+    is_sensitive: false
+  warehouses.city:
+    description: "City the warehouse is located in."
+    example_value: "Newark"
+    synonyms: ["warehouse city"]
+    display_name: "City"
+    search_keywords: ["city", "warehouses.city"]
+    is_sensitive: false
+  warehouses.state_province:
+    description: "State/province."
+    example_value: "NJ"
+    synonyms: []
+    display_name: "State / Province"
+    search_keywords: ["state_province", "warehouses.state_province"]
+    is_sensitive: false
+  warehouses.country_code:
+    description: "Country."
+    example_value: "US"
+    synonyms: []
+    display_name: "Country"
+    search_keywords: ["country_code", "warehouses.country_code"]
+    is_sensitive: false
+  warehouses.is_active:
+    description: "Whether the warehouse is currently operating."
+    example_value: "true"
+    synonyms: []
+    display_name: "Active"
+    search_keywords: ["is_active", "warehouses.is_active"]
+    is_sensitive: false
+  warehouses.created_at:
+    description: "Row creation timestamp."
+    example_value: "2021-01-01T00:00:00Z"
+    synonyms: []
+    display_name: "Created At"
+    search_keywords: ["created_at", "warehouses.created_at"]
+    is_sensitive: false
+
+  # ------------------------------------------------------------------ inventory
+  inventory.inventory_id:
+    description: "Surrogate identifier."
+    example_value: "55021"
+    synonyms: []
+    display_name: "Inventory ID"
+    search_keywords: ["inventory_id", "inventory.inventory_id"]
+    is_sensitive: false
+  inventory.product_id:
+    description: "Product being stocked."
+    example_value: "10234"
+    synonyms: []
+    display_name: "Product ID"
+    search_keywords: ["product_id", "inventory.product_id"]
+    is_sensitive: false
+  inventory.warehouse_id:
+    description: "Warehouse holding the stock."
+    example_value: "3"
+    synonyms: []
+    display_name: "Warehouse ID"
+    search_keywords: ["warehouse_id", "inventory.warehouse_id"]
+    is_sensitive: false
+  inventory.quantity_on_hand:
+    description: "Units currently in physical stock at this warehouse."
+    example_value: "142"
+    synonyms: ["stock level", "units in stock", "on-hand quantity", "inventory level"]
+    display_name: "Quantity On Hand"
+    search_keywords: ["quantity_on_hand", "inventory.quantity_on_hand", "stock level"]
+    is_sensitive: false
+  inventory.reorder_level:
+    description: "Threshold below which restocking should trigger."
+    example_value: "25"
+    synonyms: ["reorder point", "restock threshold"]
+    display_name: "Reorder Level"
+    search_keywords: ["reorder_level", "inventory.reorder_level", "reorder point"]
+    is_sensitive: false
+  inventory.last_restocked_at:
+    description: "When stock was last replenished."
+    example_value: "2026-01-20T08:00:00Z"
+    synonyms: ["last restock date"]
+    display_name: "Last Restocked At"
+    search_keywords: ["last_restocked_at", "inventory.last_restocked_at", "last restock date"]
+    is_sensitive: false
+  inventory.updated_at:
+    description: "Row last-modified timestamp."
+    example_value: "2026-02-01T10:00:00Z"
+    synonyms: []
+    display_name: "Updated At"
+    search_keywords: ["updated_at", "inventory.updated_at"]
+    is_sensitive: false
+
+  # ---------------------------------------------------------------------- orders
+  orders.order_id:
+    description: "Surrogate identifier."
+    example_value: "88342"
+    synonyms: ["internal order ID"]
+    display_name: "Order ID"
+    search_keywords: ["order_id", "orders.order_id"]
+    is_sensitive: false
+  orders.order_number:
+    description: "Business identifier for the order."
+    example_value: "ORD-2026-000123"
+    synonyms: ["order number", "order ID (business-facing)"]
+    display_name: "Order Number"
+    search_keywords: ["order_number", "orders.order_number"]
+    is_sensitive: false
+  orders.customer_id:
+    description: "Customer who placed the order."
+    example_value: "48213"
+    synonyms: []
+    display_name: "Customer ID"
+    search_keywords: ["customer_id", "orders.customer_id"]
+    is_sensitive: false
+  orders.promotion_id:
+    description: "Promotion applied at checkout, if any."
+    example_value: "12"
+    synonyms: ["coupon used", "promo applied"]
+    display_name: "Promotion ID"
+    search_keywords: ["promotion_id", "orders.promotion_id", "coupon used"]
+    is_sensitive: false
+  orders.order_date:
+    description: "When the order was placed."
+    example_value: "2026-01-15T18:32:00Z"
+    synonyms: ["order date", "purchase date", "date ordered"]
+    display_name: "Order Date"
+    search_keywords: ["order_date", "orders.order_date", "purchase date"]
+    is_sensitive: false
+  orders.order_status:
+    description: "Current lifecycle state of the order."
+    example_value: "shipped"
+    synonyms: ["order status", "order state"]
+    display_name: "Order Status"
+    search_keywords: ["order_status", "orders.order_status", "order state"]
+    is_sensitive: false
+  orders.sales_channel:
+    description: "Where the order originated."
+    example_value: "mobile_app"
+    synonyms: ["channel", "sales channel", "platform"]
+    display_name: "Sales Channel"
+    search_keywords: ["sales_channel", "orders.sales_channel", "channel"]
+    is_sensitive: false
+  orders.shipping_address_line1:
+    description: "Street line of the shipping destination (snapshot)."
+    example_value: "221B Baker Street"
+    synonyms: ["shipping address"]
+    display_name: "Shipping Address Line 1"
+    search_keywords: ["shipping_address_line1", "orders.shipping_address_line1", "shipping address"]
+    is_sensitive: true
+  orders.shipping_city:
+    description: "City of the shipping destination (snapshot)."
+    example_value: "Austin"
+    synonyms: ["shipping city", "ship-to city"]
+    display_name: "Shipping City"
+    search_keywords: ["shipping_city", "orders.shipping_city"]
+    is_sensitive: false
+  orders.shipping_state_province:
+    description: "State/province of the shipping destination (snapshot)."
+    example_value: "TX"
+    synonyms: ["shipping state"]
+    display_name: "Shipping State"
+    search_keywords: ["shipping_state_province", "orders.shipping_state_province"]
+    is_sensitive: false
+  orders.shipping_postal_code:
+    description: "Postal code of the shipping destination (snapshot)."
+    example_value: "73301"
+    synonyms: ["shipping zip"]
+    display_name: "Shipping Postal Code"
+    search_keywords: ["shipping_postal_code", "orders.shipping_postal_code", "shipping zip"]
+    is_sensitive: true
+  orders.shipping_country_code:
+    description: "Country of the shipping destination (snapshot)."
+    example_value: "US"
+    synonyms: ["shipping country", "ship-to country"]
+    display_name: "Shipping Country"
+    search_keywords: ["shipping_country_code", "orders.shipping_country_code"]
+    is_sensitive: false
+  orders.subtotal_amount:
+    description: "Sum of line items before discount, tax, and shipping."
+    example_value: "149.95"
+    synonyms: ["subtotal", "merchandise total", "gross sales (line-level)"]
+    display_name: "Subtotal"
+    search_keywords: ["subtotal_amount", "orders.subtotal_amount", "subtotal"]
+    is_sensitive: false
+  orders.discount_amount:
+    description: "Total discount applied to the order."
+    example_value: "15.00"
+    synonyms: ["discount", "order discount", "savings"]
+    display_name: "Discount Amount"
+    search_keywords: ["discount_amount", "orders.discount_amount", "discount"]
+    is_sensitive: false
+  orders.tax_amount:
+    description: "Sales tax charged."
+    example_value: "10.87"
+    synonyms: ["tax", "sales tax"]
+    display_name: "Tax Amount"
+    search_keywords: ["tax_amount", "orders.tax_amount", "sales tax"]
+    is_sensitive: false
+  orders.shipping_amount:
+    description: "Shipping/freight charged to the customer."
+    example_value: "5.99"
+    synonyms: ["shipping cost", "freight", "delivery fee"]
+    display_name: "Shipping Amount"
+    search_keywords: ["shipping_amount", "orders.shipping_amount", "shipping cost"]
+    is_sensitive: false
+  orders.total_amount:
+    description: "Final amount charged to the customer."
+    example_value: "151.81"
+    synonyms: ["order total", "amount charged", "grand total"]
+    display_name: "Total Amount"
+    search_keywords: ["total_amount", "orders.total_amount", "order total", "grand total"]
+    is_sensitive: false
+  orders.currency_code:
+    description: "Currency of all monetary amounts on the order."
+    example_value: "USD"
+    synonyms: ["currency"]
+    display_name: "Currency"
+    search_keywords: ["currency_code", "orders.currency_code", "currency"]
+    is_sensitive: false
+  orders.created_at:
+    description: "Row creation timestamp."
+    example_value: "2026-01-15T18:32:00Z"
+    synonyms: []
+    display_name: "Created At"
+    search_keywords: ["created_at", "orders.created_at"]
+    is_sensitive: false
+  orders.updated_at:
+    description: "Row last-modified timestamp."
+    example_value: "2026-01-18T09:00:00Z"
+    synonyms: []
+    display_name: "Updated At"
+    search_keywords: ["updated_at", "orders.updated_at"]
+    is_sensitive: false
+
+  # ----------------------------------------------------------------- order_items
+  order_items.order_item_id:
+    description: "Surrogate identifier."
+    example_value: "220981"
+    synonyms: ["line item ID"]
+    display_name: "Order Item ID"
+    search_keywords: ["order_item_id", "order_items.order_item_id"]
+    is_sensitive: false
+  order_items.order_id:
+    description: "Order this line belongs to."
+    example_value: "88342"
+    synonyms: []
+    display_name: "Order ID"
+    search_keywords: ["order_id", "order_items.order_id"]
+    is_sensitive: false
+  order_items.product_id:
+    description: "Product purchased."
+    example_value: "10234"
+    synonyms: []
+    display_name: "Product ID"
+    search_keywords: ["product_id", "order_items.product_id"]
+    is_sensitive: false
+  order_items.quantity:
+    description: "Units purchased on this line."
+    example_value: "2"
+    synonyms: ["quantity ordered", "units purchased", "qty"]
+    display_name: "Quantity"
+    search_keywords: ["quantity", "order_items.quantity", "qty"]
+    is_sensitive: false
+  order_items.unit_price:
+    description: "Price per unit at the time of sale (historical)."
+    example_value: "29.99"
+    synonyms: ["selling price (at purchase)", "price paid", "purchase price"]
+    display_name: "Unit Price"
+    search_keywords: ["unit_price", "order_items.unit_price", "price paid"]
+    is_sensitive: false
+  order_items.discount_amount:
+    description: "Line-level discount applied."
+    example_value: "2.00"
+    synonyms: ["line discount", "item discount"]
+    display_name: "Discount Amount"
+    search_keywords: ["discount_amount", "order_items.discount_amount", "line discount"]
+    is_sensitive: false
+  order_items.line_total:
+    description: "(unit_price x quantity) - discount_amount."
+    example_value: "57.98"
+    synonyms: ["line total", "item total", "extended price"]
+    display_name: "Line Total"
+    search_keywords: ["line_total", "order_items.line_total", "extended price"]
+    is_sensitive: false
+  order_items.created_at:
+    description: "Row creation timestamp."
+    example_value: "2026-01-15T18:32:00Z"
+    synonyms: []
+    display_name: "Created At"
+    search_keywords: ["created_at", "order_items.created_at"]
+    is_sensitive: false
+
+  # -------------------------------------------------------------------- payments
+  payments.payment_id:
+    description: "Surrogate identifier."
+    example_value: "61120"
+    synonyms: ["transaction ID (internal)"]
+    display_name: "Payment ID"
+    search_keywords: ["payment_id", "payments.payment_id"]
+    is_sensitive: false
+  payments.order_id:
+    description: "Order this payment applies to."
+    example_value: "88342"
+    synonyms: []
+    display_name: "Order ID"
+    search_keywords: ["order_id", "payments.order_id"]
+    is_sensitive: false
+  payments.payment_method:
+    description: "How the customer paid."
+    example_value: "credit_card"
+    synonyms: ["payment method", "payment type"]
+    display_name: "Payment Method"
+    search_keywords: ["payment_method", "payments.payment_method"]
+    is_sensitive: false
+  payments.payment_status:
+    description: "Current state of this payment transaction."
+    example_value: "captured"
+    synonyms: ["payment status"]
+    display_name: "Payment Status"
+    search_keywords: ["payment_status", "payments.payment_status"]
+    is_sensitive: false
+  payments.amount:
+    description: "Amount processed in this transaction."
+    example_value: "151.81"
+    synonyms: ["amount paid", "amount charged", "payment amount", "transaction amount"]
+    display_name: "Amount"
+    search_keywords: ["amount", "payments.amount", "amount paid"]
+    is_sensitive: false
+  payments.transaction_reference:
+    description: "External payment-gateway transaction ID."
+    example_value: "ch_3P8x2ZLkdI"
+    synonyms: ["gateway reference", "transaction reference"]
+    display_name: "Transaction Reference"
+    search_keywords: ["transaction_reference", "payments.transaction_reference", "gateway reference"]
+    is_sensitive: true
+  payments.paid_at:
+    description: "When the payment was successfully captured."
+    example_value: "2026-01-15T18:33:10Z"
+    synonyms: ["payment date", "date paid"]
+    display_name: "Paid At"
+    search_keywords: ["paid_at", "payments.paid_at", "payment date"]
+    is_sensitive: false
+  payments.created_at:
+    description: "Row creation timestamp."
+    example_value: "2026-01-15T18:32:05Z"
+    synonyms: []
+    display_name: "Created At"
+    search_keywords: ["created_at", "payments.created_at"]
+    is_sensitive: false
+
+  # ------------------------------------------------------------------- shipments
+  shipments.shipment_id:
+    description: "Surrogate identifier."
+    example_value: "70211"
+    synonyms: []
+    display_name: "Shipment ID"
+    search_keywords: ["shipment_id", "shipments.shipment_id"]
+    is_sensitive: false
+  shipments.order_id:
+    description: "Order being fulfilled."
+    example_value: "88342"
+    synonyms: []
+    display_name: "Order ID"
+    search_keywords: ["order_id", "shipments.order_id"]
+    is_sensitive: false
+  shipments.warehouse_id:
+    description: "Warehouse the shipment originated from."
+    example_value: "3"
+    synonyms: ["ship-from warehouse"]
+    display_name: "Warehouse ID"
+    search_keywords: ["warehouse_id", "shipments.warehouse_id", "ship-from warehouse"]
+    is_sensitive: false
+  shipments.carrier:
+    description: "Shipping carrier."
+    example_value: "UPS"
+    synonyms: ["carrier", "shipping company"]
+    display_name: "Carrier"
+    search_keywords: ["carrier", "shipments.carrier", "shipping company"]
+    is_sensitive: false
+  shipments.tracking_number:
+    description: "Carrier tracking number."
+    example_value: "1Z999AA10123456784"
+    synonyms: ["tracking number", "tracking ID"]
+    display_name: "Tracking Number"
+    search_keywords: ["tracking_number", "shipments.tracking_number"]
+    is_sensitive: false
+  shipments.shipment_status:
+    description: "Current state of the shipment."
+    example_value: "in_transit"
+    synonyms: ["shipping status", "delivery status"]
+    display_name: "Shipment Status"
+    search_keywords: ["shipment_status", "shipments.shipment_status", "delivery status"]
+    is_sensitive: false
+  shipments.shipped_at:
+    description: "When the parcel left the warehouse."
+    example_value: "2026-01-16T12:00:00Z"
+    synonyms: ["ship date", "date shipped"]
+    display_name: "Shipped At"
+    search_keywords: ["shipped_at", "shipments.shipped_at", "ship date"]
+    is_sensitive: false
+  shipments.delivered_at:
+    description: "When the parcel was delivered."
+    example_value: "2026-01-19T15:40:00Z"
+    synonyms: ["delivery date", "date delivered"]
+    display_name: "Delivered At"
+    search_keywords: ["delivered_at", "shipments.delivered_at", "delivery date"]
+    is_sensitive: false
+  shipments.created_at:
+    description: "Row creation timestamp."
+    example_value: "2026-01-15T20:00:00Z"
+    synonyms: []
+    display_name: "Created At"
+    search_keywords: ["created_at", "shipments.created_at"]
+    is_sensitive: false
+
+  # -------------------------------------------------------------- product_reviews
+  product_reviews.review_id:
+    description: "Surrogate identifier."
+    example_value: "33210"
+    synonyms: []
+    display_name: "Review ID"
+    search_keywords: ["review_id", "product_reviews.review_id"]
+    is_sensitive: false
+  product_reviews.product_id:
+    description: "Product being reviewed."
+    example_value: "10234"
+    synonyms: []
+    display_name: "Product ID"
+    search_keywords: ["product_id", "product_reviews.product_id"]
+    is_sensitive: false
+  product_reviews.customer_id:
+    description: "Author of the review."
+    example_value: "48213"
+    synonyms: ["reviewer"]
+    display_name: "Customer ID"
+    search_keywords: ["customer_id", "product_reviews.customer_id", "reviewer"]
+    is_sensitive: false
+  product_reviews.order_item_id:
+    description: "Purchased line item this review is tied to, if any."
+    example_value: "220981"
+    synonyms: ["verified purchase link"]
+    display_name: "Order Item ID"
+    search_keywords: ["order_item_id", "product_reviews.order_item_id", "verified purchase"]
+    is_sensitive: false
+  product_reviews.rating:
+    description: "Star rating given."
+    example_value: "5"
+    synonyms: ["rating", "star rating", "review score"]
+    display_name: "Rating"
+    search_keywords: ["rating", "product_reviews.rating", "star rating"]
+    is_sensitive: false
+  product_reviews.review_title:
+    description: "Short review headline."
+    example_value: "Great value!"
+    synonyms: ["review title", "headline"]
+    display_name: "Review Title"
+    search_keywords: ["review_title", "product_reviews.review_title", "headline"]
+    is_sensitive: false
+  product_reviews.review_text:
+    description: "Full review body."
+    example_value: "Works exactly as described..."
+    synonyms: ["review", "review text", "comment", "feedback"]
+    display_name: "Review Text"
+    search_keywords: ["review_text", "product_reviews.review_text", "comment", "feedback"]
+    is_sensitive: false
+  product_reviews.is_verified_purchase:
+    description: "Whether the reviewer actually bought the item."
+    example_value: "true"
+    synonyms: ["verified purchase"]
+    display_name: "Verified Purchase"
+    search_keywords: ["is_verified_purchase", "product_reviews.is_verified_purchase"]
+    is_sensitive: false
+  product_reviews.review_date:
+    description: "When the review was submitted."
+    example_value: "2026-01-25T10:00:00Z"
+    synonyms: ["review date", "date reviewed"]
+    display_name: "Review Date"
+    search_keywords: ["review_date", "product_reviews.review_date"]
+    is_sensitive: false
+
+  # ------------------------------------------------------------------- promotions
+  promotions.promotion_id:
+    description: "Surrogate identifier."
+    example_value: "12"
+    synonyms: []
+    display_name: "Promotion ID"
+    search_keywords: ["promotion_id", "promotions.promotion_id"]
+    is_sensitive: false
+  promotions.promotion_code:
+    description: "Code customers enter at checkout."
+    example_value: "SUMMER25"
+    synonyms: ["coupon code", "promo code", "discount code"]
+    display_name: "Promotion Code"
+    search_keywords: ["promotion_code", "promotions.promotion_code", "coupon code"]
+    is_sensitive: false
+  promotions.promotion_name:
+    description: "Display name of the campaign."
+    example_value: "Summer Sale 25% Off"
+    synonyms: ["promotion", "campaign", "sale"]
+    display_name: "Promotion Name"
+    search_keywords: ["promotion_name", "promotions.promotion_name", "campaign"]
+    is_sensitive: false
+  promotions.discount_type:
+    description: "Whether discount_value is a percent or a flat amount."
+    example_value: "percentage"
+    synonyms: ["discount type"]
+    display_name: "Discount Type"
+    search_keywords: ["discount_type", "promotions.discount_type"]
+    is_sensitive: false
+  promotions.discount_value:
+    description: "Magnitude of the discount (meaning depends on discount_type)."
+    example_value: "25.00"
+    synonyms: ["discount amount/percentage", "savings"]
+    display_name: "Discount Value"
+    search_keywords: ["discount_value", "promotions.discount_value", "savings"]
+    is_sensitive: false
+  promotions.starts_at:
+    description: "When the promotion becomes active."
+    example_value: "2026-06-01T00:00:00Z"
+    synonyms: ["start date"]
+    display_name: "Starts At"
+    search_keywords: ["starts_at", "promotions.starts_at", "start date"]
+    is_sensitive: false
+  promotions.ends_at:
+    description: "When the promotion expires."
+    example_value: "2026-06-30T23:59:59Z"
+    synonyms: ["end date", "expiration date"]
+    display_name: "Ends At"
+    search_keywords: ["ends_at", "promotions.ends_at", "expiration date"]
+    is_sensitive: false
+  promotions.is_active:
+    description: "Whether the promotion is currently enabled."
+    example_value: "true"
+    synonyms: ["active promotion"]
+    display_name: "Active"
+    search_keywords: ["is_active", "promotions.is_active", "active promotion"]
+    is_sensitive: false
+  promotions.created_at:
+    description: "Row creation timestamp."
+    example_value: "2026-05-15T00:00:00Z"
+    synonyms: []
+    display_name: "Created At"
+    search_keywords: ["created_at", "promotions.created_at"]
+    is_sensitive: false
+
+  # ---------------------------------------------------------------------- returns
+  returns.return_id:
+    description: "Surrogate identifier."
+    example_value: "4102"
+    synonyms: ["RMA ID"]
+    display_name: "Return ID"
+    search_keywords: ["return_id", "returns.return_id", "rma id"]
+    is_sensitive: false
+  returns.order_item_id:
+    description: "Purchased line item being returned."
+    example_value: "220981"
+    synonyms: []
+    display_name: "Order Item ID"
+    search_keywords: ["order_item_id", "returns.order_item_id"]
+    is_sensitive: false
+  returns.return_reason:
+    description: "Why the customer returned it."
+    example_value: "defective"
+    synonyms: ["return reason", "reason for return"]
+    display_name: "Return Reason"
+    search_keywords: ["return_reason", "returns.return_reason"]
+    is_sensitive: false
+  returns.return_status:
+    description: "Current state of the return request."
+    example_value: "approved"
+    synonyms: ["return status", "RMA status"]
+    display_name: "Return Status"
+    search_keywords: ["return_status", "returns.return_status", "rma status"]
+    is_sensitive: false
+  returns.quantity_returned:
+    description: "Units returned in this request."
+    example_value: "1"
+    synonyms: ["quantity returned", "units returned"]
+    display_name: "Quantity Returned"
+    search_keywords: ["quantity_returned", "returns.quantity_returned"]
+    is_sensitive: false
+  returns.refund_amount:
+    description: "Amount refunded for this return."
+    example_value: "29.99"
+    synonyms: ["refund", "refund amount", "amount refunded"]
+    display_name: "Refund Amount"
+    search_keywords: ["refund_amount", "returns.refund_amount", "refund"]
+    is_sensitive: false
+  returns.requested_at:
+    description: "When the return was requested."
+    example_value: "2026-01-28T09:00:00Z"
+    synonyms: ["return date", "date requested"]
+    display_name: "Requested At"
+    search_keywords: ["requested_at", "returns.requested_at", "return date"]
+    is_sensitive: false
+  returns.resolved_at:
+    description: "When the return was closed out."
+    example_value: "2026-02-02T14:00:00Z"
+    synonyms: ["resolution date"]
+    display_name: "Resolved At"
+    search_keywords: ["resolved_at", "returns.resolved_at", "resolution date"]
+    is_sensitive: false

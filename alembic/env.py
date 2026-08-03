@@ -15,12 +15,9 @@ from alembic import context
 from sqlalchemy import Connection, pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from querymind import models as _models  # noqa: F401 -- registers tables on Base.metadata
 from querymind.core.config import get_settings
 from querymind.db.base import Base
-
-# Import model modules here as they are introduced in future phases so
-# their tables are registered on Base.metadata before autogenerate runs, e.g.:
-#   from querymind.domain.some_module import models as _
 
 config = context.config
 

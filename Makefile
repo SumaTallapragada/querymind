@@ -1,5 +1,6 @@
 .DEFAULT_GOAL := help
 .PHONY: help install run lint format typecheck test check migrate migrate-autogenerate \
+        seed seed-small seed-medium \
         docker-build docker-up docker-down docker-logs docker-clean
 
 help: ## Show this help
@@ -30,6 +31,15 @@ migrate: ## Apply all pending Alembic migrations
 
 migrate-autogenerate: ## Autogenerate a new Alembic revision from model changes
 	uv run alembic revision --autogenerate -m "$(name)"
+
+seed: ## Generate and persist the full-scale simulated dataset (Phase 2 §9 sizes)
+	uv run python scripts/seed_database.py $(ARGS)
+
+seed-small: ## Generate and persist a small dataset (quick smoke test)
+	uv run python scripts/seed_database.py --dataset-size small $(ARGS)
+
+seed-medium: ## Generate and persist a medium dataset
+	uv run python scripts/seed_database.py --dataset-size medium $(ARGS)
 
 docker-build: ## Build the application image
 	docker compose build
