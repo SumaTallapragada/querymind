@@ -20,19 +20,36 @@ class AsyncSessionTransactionRunner(TransactionRunner):
     ever needing to re-fetch or manually read back a not-yet-existent
     primary key.
 
-    Batches `add_all` + `flush` in chunks of `batch_size` to bound peak
-    statement size for large record counts (e.g. 100,000+ orders), then
-    issues one `commit` per `persist()` call — one commit per generation
-    stage, never one per row.
+    `add_all` runs once for the *entire* batch before `flush` is ever
+    called. This matters for large stages: a single stage's records
+    routinely share a "hub" parent from an earlier stage (e.g. thousands
+    of `Order`s pointing at a few hundred `Customer`s). If a stage were
+    flushed in slices — add a slice, flush it, add the next slice, flush
+    it — SQLAlchemy would, on each early flush, try to synchronize that
+    shared parent's *entire* relationship history, including child
+    records from later slices that hadn't been added yet, and correctly
+    (if noisily) decline with `SAWarning: Object of type <...> not in
+    session, add operation along '<relationship>' won't proceed` for each
+    one — deferring, not losing, that synchronization to a later flush
+    once the child was finally present. Registering every record with the
+    session first, before any flush runs, means no relationship history
+    is ever inspected for a child that isn't already attached, so the
+    warning's precondition never occurs.
+
+    A single `flush` still bounds actual statement size: SQLAlchemy 2.0's
+    `insertmanyvalues` execution strategy (the default for PostgreSQL)
+    automatically pages a large bulk insert into multiple appropriately
+    sized `INSERT` statements under the hood, which is what the earlier
+    manual `batch_size` chunking here was reimplementing by hand — so
+    dropping the hand-rolled chunking doesn't trade away that protection.
+    One `commit` per `persist()` call is unchanged — one commit per
+    generation stage, never one per row.
     """
 
-    def __init__(self, session: AsyncSession, batch_size: int = 2_000) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
-        self._batch_size = batch_size
 
     async def persist(self, records: Sequence[ModelT]) -> None:
-        for start in range(0, len(records), self._batch_size):
-            batch = records[start : start + self._batch_size]
-            self._session.add_all(batch)
-            await self._session.flush()
+        self._session.add_all(records)
+        await self._session.flush()
         await self._session.commit()
