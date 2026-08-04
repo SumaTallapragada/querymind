@@ -1,0 +1,806 @@
+# Query Intelligence Library for QueryMind.
+#
+# The editable source of truth for curated, gold-standard
+# natural-language-question-to-SQL examples — never hardcoded into
+# Python. Loaded at runtime by querymind.query_library.loader /
+# querymind.query_library.catalog.
+#
+# `linked_schema_objects` are *logical* references ("table" or
+# "table.column"), and `query_context` is a hand-authored summary, not a
+# live querymind.nlu.QueryContext — this file (and the package that
+# loads it) has no runtime dependency on the NLU Engine, Schema Linker,
+# or Metadata Engine. `business_concepts` reference
+# querymind.business_knowledge concept ids where one exists.
+#
+# Every gold_sql is written for PostgreSQL (querymind's own database)
+# unless a different `dialect` is set.
+#
+# Schema:
+#   examples:
+#     - id: <str, unique, stable>
+#       title: <str>
+#       natural_language_question: <str>
+#       normalized_question: <str>
+#       query_context: {intent, primary_entity, metrics, dimensions, aggregation}
+#       business_concepts: [<str>, ...]
+#       linked_schema_objects: [<str>, ...]
+#       gold_sql: <str>
+#       sql_explanation: <str>
+#       difficulty: beginner | intermediate | advanced | expert
+#       tags: [<str>, ...]
+#       dialect: postgresql | mysql | sqlite | ansi
+#       expected_result_description: <str>
+#       expected_result_shape: scalar | single_row | row_list | time_series | ranked_list
+#       common_variations: [<str>, ...]
+#       notes: <str> | null
+
+examples:
+  - id: customer_count
+    title: Total Customer Count
+    natural_language_question: "How many customers do we have?"
+    normalized_question: "how many customers do we have"
+    query_context:
+      intent: count
+      primary_entity: customer
+      aggregation: count
+    business_concepts: []
+    linked_schema_objects: ["customers.customer_id"]
+    gold_sql: "SELECT COUNT(*) AS customer_count FROM customers;"
+    sql_explanation: "Counts every row in the customers table."
+    difficulty: beginner
+    tags: ["customers", "aggregation"]
+    dialect: postgresql
+    expected_result_description: "A single number: the total number of customer accounts."
+    expected_result_shape: scalar
+    common_variations:
+      - "What is our total customer count?"
+      - "Count all customers."
+    notes: null
+
+  - id: top_customers_by_revenue
+    title: Top 10 Customers by Revenue
+    natural_language_question: "Who are our top 10 customers by total revenue?"
+    normalized_question: "who are our top 10 customers by total revenue"
+    query_context:
+      intent: top_n
+      primary_entity: customer
+      metrics: ["revenue"]
+      aggregation: sum
+    business_concepts: ["revenue", "top_customer"]
+    linked_schema_objects:
+      - "customers.customer_id"
+      - "customers.first_name"
+      - "customers.last_name"
+      - "orders.customer_id"
+      - "orders.total_amount"
+    gold_sql: |
+      SELECT
+          c.customer_id,
+          c.first_name,
+          c.last_name,
+          SUM(o.total_amount) AS total_revenue
+      FROM customers c
+      JOIN orders o ON o.customer_id = c.customer_id
+      GROUP BY c.customer_id, c.first_name, c.last_name
+      ORDER BY total_revenue DESC
+      LIMIT 10;
+    sql_explanation: >-
+      Joins customers to their orders, sums total_amount per customer,
+      and returns the 10 highest spenders.
+    difficulty: intermediate
+    tags: ["customers", "orders", "top-n", "aggregation", "joins", "financial-metrics"]
+    dialect: postgresql
+    expected_result_description: >-
+      Up to 10 rows, one per customer, each with their id, name, and
+      lifetime revenue, ranked highest first.
+    expected_result_shape: ranked_list
+    common_variations:
+      - "Show our best customers by spend."
+      - "List the top 10 highest-spending customers."
+    notes: "Orders in every status are included; a stricter version might filter to non-cancelled orders."
+
+  - id: orders_last_30_days
+    title: Orders in the Last 30 Days
+    natural_language_question: "How many orders were placed in the last 30 days?"
+    normalized_question: "how many orders were placed in the last 30 days"
+    query_context:
+      intent: count
+      primary_entity: order
+      aggregation: count
+    business_concepts: []
+    linked_schema_objects: ["orders.order_id", "orders.order_date"]
+    gold_sql: "SELECT COUNT(*) AS order_count FROM orders WHERE order_date >= NOW() - INTERVAL '30 days';"
+    sql_explanation: "Filters orders to the trailing 30-day window and counts them."
+    difficulty: beginner
+    tags: ["orders", "time-based", "filtering"]
+    dialect: postgresql
+    expected_result_description: "A single number: how many orders were placed in the last 30 days."
+    expected_result_shape: scalar
+    common_variations:
+      - "Orders placed this past month?"
+    notes: null
+
+  - id: orders_by_status
+    title: Order Count by Status
+    natural_language_question: "Show the count of orders grouped by status."
+    normalized_question: "show the count of orders grouped by status"
+    query_context:
+      intent: aggregation
+      primary_entity: order
+      dimensions: ["order_status"]
+      aggregation: count
+    business_concepts: []
+    linked_schema_objects: ["orders.order_status"]
+    gold_sql: |
+      SELECT order_status, COUNT(*) AS order_count
+      FROM orders
+      GROUP BY order_status
+      ORDER BY order_count DESC;
+    sql_explanation: "Groups orders by their current lifecycle status and counts each group."
+    difficulty: beginner
+    tags: ["orders", "grouping", "aggregation"]
+    dialect: postgresql
+    expected_result_description: "One row per order status, with how many orders currently have that status."
+    expected_result_shape: row_list
+    common_variations:
+      - "How many orders are in each status?"
+    notes: null
+
+  - id: payment_success_rate
+    title: Payment Success Rate
+    natural_language_question: "What percentage of payments were successfully captured?"
+    normalized_question: "what percentage of payments were successfully captured"
+    query_context:
+      intent: aggregation
+      primary_entity: payment
+      metrics: ["payment_success_rate"]
+      aggregation: average
+    business_concepts: ["payment_success_rate"]
+    linked_schema_objects: ["payments.payment_status"]
+    gold_sql: |
+      SELECT
+          ROUND(
+              100.0 * COUNT(*) FILTER (WHERE payment_status = 'captured') / COUNT(*),
+              2
+          ) AS payment_success_rate_pct
+      FROM payments;
+    sql_explanation: >-
+      Divides the count of captured payments by the count of all
+      payment attempts, expressed as a percentage.
+    difficulty: intermediate
+    tags: ["payments", "financial-metrics", "aggregation"]
+    dialect: postgresql
+    expected_result_description: "A single percentage: the share of payment attempts that were captured."
+    expected_result_shape: scalar
+    common_variations:
+      - "How often do payments succeed?"
+    notes: "Uses PostgreSQL's FILTER clause; an ANSI-portable version would use a CASE expression inside SUM/COUNT instead."
+
+  - id: failed_payments_last_week
+    title: Failed Payments in the Last Week
+    natural_language_question: "List all failed payments from the last week."
+    normalized_question: "list all failed payments from the last week"
+    query_context:
+      intent: detail
+      primary_entity: payment
+    business_concepts: []
+    linked_schema_objects:
+      - "payments.payment_id"
+      - "payments.order_id"
+      - "payments.payment_status"
+      - "payments.amount"
+      - "payments.created_at"
+    gold_sql: |
+      SELECT payment_id, order_id, amount, payment_method, created_at
+      FROM payments
+      WHERE payment_status = 'failed'
+        AND created_at >= NOW() - INTERVAL '7 days'
+      ORDER BY created_at DESC;
+    sql_explanation: "Filters payments to failed attempts from the trailing 7 days, most recent first."
+    difficulty: beginner
+    tags: ["payments", "filtering", "time-based"]
+    dialect: postgresql
+    expected_result_description: "One row per failed payment from the last 7 days."
+    expected_result_shape: row_list
+    common_variations:
+      - "Show recent declined payments."
+    notes: null
+
+  - id: most_expensive_products
+    title: 5 Most Expensive Products
+    natural_language_question: "What are the 5 most expensive products?"
+    normalized_question: "what are the 5 most expensive products"
+    query_context:
+      intent: top_n
+      primary_entity: product
+      metrics: ["price"]
+    business_concepts: []
+    linked_schema_objects: ["products.product_id", "products.product_name", "products.unit_price"]
+    gold_sql: |
+      SELECT product_id, product_name, unit_price
+      FROM products
+      ORDER BY unit_price DESC
+      LIMIT 5;
+    sql_explanation: "Sorts products by catalog price, descending, and takes the top 5."
+    difficulty: beginner
+    tags: ["products", "top-n"]
+    dialect: postgresql
+    expected_result_description: "The 5 highest-priced products, most expensive first."
+    expected_result_shape: ranked_list
+    common_variations:
+      - "Show our priciest products."
+    notes: null
+
+  - id: revenue_by_category
+    title: Revenue by Product Category
+    natural_language_question: "Show total revenue by product category."
+    normalized_question: "show total revenue by product category"
+    query_context:
+      intent: aggregation
+      primary_entity: product
+      metrics: ["revenue"]
+      dimensions: ["category"]
+      aggregation: sum
+    business_concepts: ["revenue"]
+    linked_schema_objects:
+      - "product_categories.category_name"
+      - "products.category_id"
+      - "order_items.product_id"
+      - "order_items.line_total"
+    gold_sql: |
+      SELECT
+          pc.category_name,
+          SUM(oi.line_total) AS category_revenue
+      FROM order_items oi
+      JOIN products p ON p.product_id = oi.product_id
+      JOIN product_categories pc ON pc.category_id = p.category_id
+      GROUP BY pc.category_name
+      ORDER BY category_revenue DESC;
+    sql_explanation: >-
+      Joins order line items to their product and category, then sums
+      line_total (the actual line-level revenue) per category.
+    difficulty: intermediate
+    tags: ["products", "grouping", "joins", "financial-metrics", "aggregation"]
+    dialect: postgresql
+    expected_result_description: "One row per product category with its total revenue, highest first."
+    expected_result_shape: row_list
+    common_variations:
+      - "Which category generates the most revenue?"
+    notes: null
+
+  - id: supplier_longest_lead_time
+    title: Supplier with the Longest Lead Time
+    natural_language_question: "Which supplier has the longest lead time?"
+    normalized_question: "which supplier has the longest lead time"
+    query_context:
+      intent: max
+      primary_entity: supplier
+      metrics: ["lead_time"]
+      aggregation: max
+    business_concepts: ["lead_time"]
+    linked_schema_objects: ["suppliers.supplier_id", "suppliers.supplier_name", "suppliers.lead_time_days"]
+    gold_sql: |
+      SELECT supplier_id, supplier_name, lead_time_days
+      FROM suppliers
+      ORDER BY lead_time_days DESC
+      LIMIT 1;
+    sql_explanation: "Sorts suppliers by lead time, descending, and takes the single longest."
+    difficulty: beginner
+    tags: ["suppliers", "top-n"]
+    dialect: postgresql
+    expected_result_description: "The one supplier with the longest restocking lead time."
+    expected_result_shape: single_row
+    common_variations:
+      - "Who is our slowest supplier?"
+    notes: null
+
+  - id: average_supplier_rating
+    title: Average Supplier Rating
+    natural_language_question: "What is the average supplier rating?"
+    normalized_question: "what is the average supplier rating"
+    query_context:
+      intent: average
+      primary_entity: supplier
+      metrics: ["supplier_performance"]
+      aggregation: average
+    business_concepts: ["supplier_performance"]
+    linked_schema_objects: ["suppliers.rating"]
+    gold_sql: "SELECT ROUND(AVG(rating), 2) AS average_supplier_rating FROM suppliers;"
+    sql_explanation: "Averages the rating column across every supplier."
+    difficulty: beginner
+    tags: ["suppliers", "aggregation"]
+    dialect: postgresql
+    expected_result_description: "A single number: the average supplier rating."
+    expected_result_shape: scalar
+    common_variations: []
+    notes: null
+
+  - id: products_below_reorder_level
+    title: Products Below Reorder Level
+    natural_language_question: "Which products are below their reorder level?"
+    normalized_question: "which products are below their reorder level"
+    query_context:
+      intent: detail
+      primary_entity: product
+      dimensions: ["stock_availability"]
+    business_concepts: ["stock_availability"]
+    linked_schema_objects:
+      - "inventory.product_id"
+      - "inventory.warehouse_id"
+      - "inventory.quantity_on_hand"
+      - "inventory.reorder_level"
+      - "products.product_name"
+    gold_sql: |
+      SELECT
+          p.product_id,
+          p.product_name,
+          i.warehouse_id,
+          i.quantity_on_hand,
+          i.reorder_level
+      FROM inventory i
+      JOIN products p ON p.product_id = i.product_id
+      WHERE i.quantity_on_hand < i.reorder_level
+      ORDER BY (i.reorder_level - i.quantity_on_hand) DESC;
+    sql_explanation: >-
+      Joins inventory rows to their product and filters to rows where
+      the quantity on hand has fallen below the configured reorder
+      level, worst shortfall first.
+    difficulty: intermediate
+    tags: ["inventory", "products", "filtering", "joins"]
+    dialect: postgresql
+    expected_result_description: "One row per (product, warehouse) pair that needs restocking."
+    expected_result_shape: row_list
+    common_variations:
+      - "Show products that need restocking."
+      - "What's running low in inventory?"
+    notes: null
+
+  - id: total_inventory_value
+    title: Total Inventory Value
+    natural_language_question: "What is the total value of inventory on hand?"
+    normalized_question: "what is the total value of inventory on hand"
+    query_context:
+      intent: sum
+      primary_entity: inventory
+      metrics: ["inventory_value"]
+      aggregation: sum
+    business_concepts: ["inventory_value"]
+    linked_schema_objects: ["inventory.quantity_on_hand", "inventory.product_id", "products.cost_price"]
+    gold_sql: |
+      SELECT
+          SUM(i.quantity_on_hand * p.cost_price) AS total_inventory_value
+      FROM inventory i
+      JOIN products p ON p.product_id = i.product_id;
+    sql_explanation: >-
+      Joins each inventory row to its product's cost price, multiplies
+      quantity on hand by cost, and sums across every (product,
+      warehouse) row.
+    difficulty: advanced
+    tags: ["inventory", "products", "financial-metrics", "joins", "aggregation"]
+    dialect: postgresql
+    expected_result_description: "A single number: the total cost value of all inventory currently held."
+    expected_result_shape: scalar
+    common_variations:
+      - "How much is our warehouse stock worth?"
+    notes: null
+
+  - id: distinct_products_per_warehouse
+    title: Distinct Products Stocked per Warehouse
+    natural_language_question: "How many distinct products are stocked at each warehouse?"
+    normalized_question: "how many distinct products are stocked at each warehouse"
+    query_context:
+      intent: aggregation
+      primary_entity: warehouse
+      dimensions: ["warehouse"]
+      aggregation: count
+    business_concepts: ["warehouse_capacity"]
+    linked_schema_objects:
+      - "warehouses.warehouse_id"
+      - "warehouses.warehouse_code"
+      - "inventory.warehouse_id"
+      - "inventory.product_id"
+    gold_sql: |
+      SELECT
+          w.warehouse_id,
+          w.warehouse_code,
+          COUNT(DISTINCT i.product_id) AS distinct_products
+      FROM warehouses w
+      JOIN inventory i ON i.warehouse_id = w.warehouse_id
+      GROUP BY w.warehouse_id, w.warehouse_code
+      ORDER BY distinct_products DESC;
+    sql_explanation: "Joins warehouses to their inventory rows and counts distinct products per warehouse."
+    difficulty: intermediate
+    tags: ["warehouses", "inventory", "grouping", "joins"]
+    dialect: postgresql
+    expected_result_description: "One row per warehouse with how many distinct products it stocks."
+    expected_result_shape: row_list
+    common_variations: []
+    notes: null
+
+  - id: average_shipment_delivery_time
+    title: Average Shipment Delivery Time
+    natural_language_question: "What is the average time between shipping and delivery?"
+    normalized_question: "what is the average time between shipping and delivery"
+    query_context:
+      intent: average
+      primary_entity: shipment
+      metrics: ["shipment_delay"]
+      aggregation: average
+    business_concepts: ["shipment_delay"]
+    linked_schema_objects: ["shipments.shipped_at", "shipments.delivered_at"]
+    gold_sql: |
+      SELECT
+          ROUND(AVG(EXTRACT(EPOCH FROM (delivered_at - shipped_at)) / 86400.0), 2) AS avg_delivery_days
+      FROM shipments
+      WHERE delivered_at IS NOT NULL AND shipped_at IS NOT NULL;
+    sql_explanation: >-
+      Computes the delivered-minus-shipped interval for every completed
+      shipment, converts it to days, and averages across all of them.
+    difficulty: intermediate
+    tags: ["shipments", "aggregation"]
+    dialect: postgresql
+    expected_result_description: "A single number: the average number of days from shipped to delivered."
+    expected_result_shape: scalar
+    common_variations:
+      - "How long does delivery usually take after shipping?"
+    notes: "PostgreSQL-specific: EXTRACT(EPOCH FROM interval) converts the shipped/delivered gap to seconds before dividing into days."
+
+  - id: shipments_by_carrier
+    title: Shipment Count by Carrier
+    natural_language_question: "Show shipment counts by carrier."
+    normalized_question: "show shipment counts by carrier"
+    query_context:
+      intent: aggregation
+      primary_entity: shipment
+      dimensions: ["carrier"]
+      aggregation: count
+    business_concepts: []
+    linked_schema_objects: ["shipments.carrier"]
+    gold_sql: |
+      SELECT carrier, COUNT(*) AS shipment_count
+      FROM shipments
+      GROUP BY carrier
+      ORDER BY shipment_count DESC;
+    sql_explanation: "Groups shipments by carrier and counts each group."
+    difficulty: beginner
+    tags: ["shipments", "grouping"]
+    dialect: postgresql
+    expected_result_description: "One row per carrier with how many shipments it has handled."
+    expected_result_shape: row_list
+    common_variations: []
+    notes: null
+
+  - id: promotion_usage_rate
+    title: Promotion Usage Rate
+    natural_language_question: "What percentage of orders used a promotion?"
+    normalized_question: "what percentage of orders used a promotion"
+    query_context:
+      intent: aggregation
+      primary_entity: order
+      metrics: ["promotion_usage"]
+      aggregation: average
+    business_concepts: ["promotion_usage"]
+    linked_schema_objects: ["orders.promotion_id"]
+    gold_sql: |
+      SELECT
+          ROUND(100.0 * COUNT(*) FILTER (WHERE promotion_id IS NOT NULL) / COUNT(*), 2) AS promotion_usage_pct
+      FROM orders;
+    sql_explanation: "Divides the count of orders with a non-null promotion_id by the count of all orders."
+    difficulty: intermediate
+    tags: ["orders", "promotions", "financial-metrics", "aggregation"]
+    dialect: postgresql
+    expected_result_description: "A single percentage: the share of orders that applied a promotion."
+    expected_result_shape: scalar
+    common_variations:
+      - "How often do customers use a discount code?"
+    notes: null
+
+  - id: most_used_promotion
+    title: Most Used Promotion
+    natural_language_question: "Which promotion was used the most?"
+    normalized_question: "which promotion was used the most"
+    query_context:
+      intent: top_n
+      primary_entity: promotion
+      aggregation: count
+    business_concepts: ["promotion_usage"]
+    linked_schema_objects: ["promotions.promotion_id", "promotions.promotion_name", "orders.promotion_id"]
+    gold_sql: |
+      SELECT
+          pr.promotion_id,
+          pr.promotion_name,
+          COUNT(o.order_id) AS times_used
+      FROM promotions pr
+      JOIN orders o ON o.promotion_id = pr.promotion_id
+      GROUP BY pr.promotion_id, pr.promotion_name
+      ORDER BY times_used DESC
+      LIMIT 1;
+    sql_explanation: >-
+      Joins promotions to the orders that used them, counts orders per
+      promotion, and returns the single most-used one.
+    difficulty: intermediate
+    tags: ["promotions", "orders", "top-n", "grouping", "joins"]
+    dialect: postgresql
+    expected_result_description: "The one promotion applied to the most orders."
+    expected_result_shape: single_row
+    common_variations:
+      - "What is our most popular discount code?"
+    notes: null
+
+  - id: average_review_rating_by_product
+    title: Average Review Rating by Product
+    natural_language_question: "What is the average review rating for each product?"
+    normalized_question: "what is the average review rating for each product"
+    query_context:
+      intent: aggregation
+      primary_entity: product
+      metrics: ["review_rating"]
+      dimensions: ["product"]
+      aggregation: average
+    business_concepts: ["review_rating"]
+    linked_schema_objects: ["products.product_id", "products.product_name", "product_reviews.product_id", "product_reviews.rating"]
+    gold_sql: |
+      SELECT
+          p.product_id,
+          p.product_name,
+          ROUND(AVG(pr.rating), 2) AS average_rating,
+          COUNT(pr.review_id) AS review_count
+      FROM products p
+      JOIN product_reviews pr ON pr.product_id = p.product_id
+      GROUP BY p.product_id, p.product_name
+      ORDER BY average_rating DESC;
+    sql_explanation: "Joins products to their reviews and averages the star rating per product."
+    difficulty: intermediate
+    tags: ["reviews", "products", "grouping", "aggregation", "joins"]
+    dialect: postgresql
+    expected_result_description: "One row per reviewed product with its average rating and review count."
+    expected_result_shape: row_list
+    common_variations:
+      - "Show product ratings."
+    notes: null
+
+  - id: low_rated_products
+    title: Products Rated Below 3 Stars on Average
+    natural_language_question: "Which products have an average rating below 3?"
+    normalized_question: "which products have an average rating below 3"
+    query_context:
+      intent: detail
+      primary_entity: product
+      metrics: ["review_rating"]
+      dimensions: ["product"]
+      aggregation: average
+    business_concepts: ["review_rating"]
+    linked_schema_objects: ["products.product_id", "products.product_name", "product_reviews.product_id", "product_reviews.rating"]
+    gold_sql: |
+      SELECT
+          p.product_id,
+          p.product_name,
+          ROUND(AVG(pr.rating), 2) AS average_rating
+      FROM products p
+      JOIN product_reviews pr ON pr.product_id = p.product_id
+      GROUP BY p.product_id, p.product_name
+      HAVING AVG(pr.rating) < 3
+      ORDER BY average_rating ASC;
+    sql_explanation: >-
+      Same shape as the per-product average rating, but filtered with
+      HAVING (since the filter is on the aggregate, not a raw column)
+      to only the products below a 3-star average.
+    difficulty: advanced
+    tags: ["reviews", "products", "filtering", "grouping", "aggregation", "joins"]
+    dialect: postgresql
+    expected_result_description: "One row per underperforming product, worst-rated first."
+    expected_result_shape: row_list
+    common_variations:
+      - "Show our worst-reviewed products."
+    notes: "Uses HAVING because the filter applies to an aggregate (the average), not a raw column."
+
+  - id: return_rate_by_category
+    title: Return Rate by Product Category
+    natural_language_question: "What is the return rate by product category?"
+    normalized_question: "what is the return rate by product category"
+    query_context:
+      intent: aggregation
+      primary_entity: product
+      metrics: ["return_rate"]
+      dimensions: ["category"]
+      aggregation: average
+    business_concepts: ["return_rate"]
+    linked_schema_objects:
+      - "product_categories.category_name"
+      - "products.category_id"
+      - "order_items.product_id"
+      - "order_items.order_item_id"
+      - "returns.order_item_id"
+    gold_sql: |
+      SELECT
+          pc.category_name,
+          COUNT(DISTINCT r.return_id) AS returned_items,
+          COUNT(DISTINCT oi.order_item_id) AS total_items,
+          ROUND(
+              100.0 * COUNT(DISTINCT r.return_id) / NULLIF(COUNT(DISTINCT oi.order_item_id), 0),
+              2
+          ) AS return_rate_pct
+      FROM order_items oi
+      JOIN products p ON p.product_id = oi.product_id
+      JOIN product_categories pc ON pc.category_id = p.category_id
+      LEFT JOIN returns r ON r.order_item_id = oi.order_item_id
+      GROUP BY pc.category_name
+      ORDER BY return_rate_pct DESC;
+    sql_explanation: >-
+      Left-joins order items to any matching return so items with no
+      return still count toward the denominator, then divides returned
+      line items by total line items per category.
+    difficulty: advanced
+    tags: ["returns", "products", "financial-metrics", "grouping", "joins", "aggregation"]
+    dialect: postgresql
+    expected_result_description: "One row per category with its return rate, highest first."
+    expected_result_shape: row_list
+    common_variations:
+      - "Which category has the most returns?"
+    notes: "NULLIF guards against divide-by-zero for a category with no order_items at all."
+
+  - id: monthly_revenue_trend
+    title: Monthly Revenue Trend (Past Year)
+    natural_language_question: "Show monthly revenue for the past year."
+    normalized_question: "show monthly revenue for the past year"
+    query_context:
+      intent: trend
+      primary_entity: order
+      metrics: ["revenue"]
+      dimensions: ["month"]
+      aggregation: sum
+    business_concepts: ["revenue"]
+    linked_schema_objects: ["orders.order_date", "orders.total_amount"]
+    gold_sql: |
+      SELECT
+          DATE_TRUNC('month', order_date) AS month,
+          SUM(total_amount) AS monthly_revenue
+      FROM orders
+      WHERE order_date >= NOW() - INTERVAL '1 year'
+      GROUP BY DATE_TRUNC('month', order_date)
+      ORDER BY month;
+    sql_explanation: "Buckets orders from the last 12 months by calendar month and sums revenue per bucket."
+    difficulty: advanced
+    tags: ["orders", "financial-metrics", "trend-analysis", "time-based", "grouping"]
+    dialect: postgresql
+    expected_result_description: "One row per month, ordered chronologically, with that month's total revenue."
+    expected_result_shape: time_series
+    common_variations:
+      - "How has revenue trended over the last 12 months?"
+    notes: null
+
+  - id: revenue_year_over_year_growth
+    title: Year-over-Year Revenue Growth
+    natural_language_question: "What was our year-over-year revenue growth?"
+    normalized_question: "what was our year-over-year revenue growth"
+    query_context:
+      intent: trend
+      primary_entity: order
+      metrics: ["revenue"]
+      dimensions: ["year"]
+      aggregation: sum
+    business_concepts: ["revenue"]
+    linked_schema_objects: ["orders.order_date", "orders.total_amount"]
+    gold_sql: |
+      WITH yearly_revenue AS (
+          SELECT
+              DATE_TRUNC('year', order_date) AS year,
+              SUM(total_amount) AS revenue
+          FROM orders
+          GROUP BY DATE_TRUNC('year', order_date)
+      )
+      SELECT
+          year,
+          revenue,
+          LAG(revenue) OVER (ORDER BY year) AS previous_year_revenue,
+          ROUND(
+              100.0 * (revenue - LAG(revenue) OVER (ORDER BY year))
+                  / NULLIF(LAG(revenue) OVER (ORDER BY year), 0),
+              2
+          ) AS yoy_growth_pct
+      FROM yearly_revenue
+      ORDER BY year;
+    sql_explanation: >-
+      Aggregates revenue per calendar year in a CTE, then uses the LAG
+      window function to compare each year against the prior year's
+      revenue in the same query.
+    difficulty: expert
+    tags: ["orders", "financial-metrics", "trend-analysis", "time-based"]
+    dialect: postgresql
+    expected_result_description: "One row per year with its revenue and percentage growth over the prior year."
+    expected_result_shape: time_series
+    common_variations:
+      - "Is our revenue growing year over year?"
+    notes: "Uses a window function (LAG) to compare each year's revenue against the prior year within one query."
+
+  - id: average_order_value_trend
+    title: Average Order Value Trend by Month
+    natural_language_question: "How has average order value changed month over month?"
+    normalized_question: "how has average order value changed month over month"
+    query_context:
+      intent: trend
+      primary_entity: order
+      metrics: ["average_order_value"]
+      dimensions: ["month"]
+      aggregation: average
+    business_concepts: ["average_order_value"]
+    linked_schema_objects: ["orders.order_date", "orders.total_amount", "orders.order_id"]
+    gold_sql: |
+      SELECT
+          DATE_TRUNC('month', order_date) AS month,
+          ROUND(AVG(total_amount), 2) AS average_order_value
+      FROM orders
+      GROUP BY DATE_TRUNC('month', order_date)
+      ORDER BY month;
+    sql_explanation: "Buckets orders by calendar month and averages total_amount within each bucket."
+    difficulty: advanced
+    tags: ["orders", "financial-metrics", "trend-analysis", "time-based", "aggregation"]
+    dialect: postgresql
+    expected_result_description: "One row per month, ordered chronologically, with that month's average order value."
+    expected_result_shape: time_series
+    common_variations:
+      - "Is AOV trending up or down?"
+    notes: null
+
+  - id: orders_on_black_friday
+    title: Orders Placed on Black Friday
+    natural_language_question: "How many orders were placed on Black Friday (2025-11-28)?"
+    normalized_question: "how many orders were placed on black friday 2025-11-28"
+    query_context:
+      intent: count
+      primary_entity: order
+      aggregation: count
+    business_concepts: []
+    linked_schema_objects: ["orders.order_date"]
+    gold_sql: "SELECT COUNT(*) AS order_count FROM orders WHERE order_date::date = '2025-11-28';"
+    sql_explanation: "Filters orders to a single calendar day and counts them."
+    difficulty: beginner
+    tags: ["orders", "time-based", "filtering"]
+    dialect: postgresql
+    expected_result_description: "A single number: how many orders were placed on that date."
+    expected_result_shape: scalar
+    common_variations:
+      - "How many orders did we get on our biggest sales day?"
+    notes: >-
+      The specific Black Friday date is resolved before query time
+      (e.g. by a business calendar) and passed in as a literal — SQL
+      itself has no notion of "Black Friday".
+
+  - id: repeat_customer_rate
+    title: Repeat Customer Rate
+    natural_language_question: "What percentage of customers have placed more than one order?"
+    normalized_question: "what percentage of customers have placed more than one order"
+    query_context:
+      intent: aggregation
+      primary_entity: customer
+      metrics: ["repeat_customer"]
+      aggregation: average
+    business_concepts: ["repeat_customer"]
+    linked_schema_objects: ["customers.customer_id", "orders.customer_id", "orders.order_id"]
+    gold_sql: |
+      WITH order_counts AS (
+          SELECT customer_id, COUNT(*) AS order_count
+          FROM orders
+          GROUP BY customer_id
+      )
+      SELECT
+          ROUND(
+              100.0 * COUNT(*) FILTER (WHERE order_count > 1) / COUNT(*),
+              2
+          ) AS repeat_customer_rate_pct
+      FROM order_counts;
+    sql_explanation: >-
+      Counts orders per customer in a CTE, then computes what
+      percentage of customers (who placed at least one order) placed
+      more than one.
+    difficulty: advanced
+    tags: ["customers", "orders", "aggregation", "financial-metrics"]
+    dialect: postgresql
+    expected_result_description: "A single percentage: the share of ordering customers who are repeat buyers."
+    expected_result_shape: scalar
+    common_variations:
+      - "How many of our customers come back for a second order?"
+    notes: >-
+      Only counts customers who have placed at least one order;
+      customers with zero orders never appear in order_counts and so
+      are excluded from the denominator by construction.
