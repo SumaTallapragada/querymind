@@ -1,0 +1,350 @@
+# Business knowledge catalog for QueryMind.
+#
+# The editable source of truth for business terminology — never
+# hardcoded into Python. Loaded at runtime by
+# querymind.business_knowledge.loader / querymind.business_knowledge.catalog.
+#
+# `preferred_schema_objects` are *logical* references ("table" or
+# "table.column") grounded in the real QueryMind schema (Phase 2), but
+# this file has no hard dependency on it: resolving these strings
+# against the live Metadata Engine / Schema Linker is a later
+# integration phase's job, not this catalog's.
+#
+# Schema:
+#   concepts:
+#     - id: <str, unique, stable>
+#       name: <str>
+#       concept_type: metric | segment | status | kpi | attribute
+#       description: <str>
+#       aliases: [<str>, ...]
+#       related_terms: [<str>, ...]
+#       example_questions: [<str>, ...]
+#       calculation_description: <str>
+#       formula: {expression: <str>, variables: [<str>, ...]}   # optional
+#       preferred_schema_objects: [<str>, ...]
+
+concepts:
+  - id: revenue
+    name: Revenue
+    concept_type: metric
+    description: >-
+      The total amount charged to customers across all orders, before
+      accounting for returns.
+    aliases: ["Sales Revenue", "Total Revenue", "Turnover"]
+    related_terms: ["Sales", "Gross Revenue", "Income"]
+    example_questions:
+      - "What is our total revenue this month?"
+      - "How much revenue did we generate last quarter?"
+    calculation_description: >-
+      Sum of the final charged total across every order, regardless of
+      order status.
+    formula:
+      expression: "SUM(orders.total_amount)"
+      variables: ["total_amount"]
+    preferred_schema_objects: ["orders.total_amount"]
+
+  - id: gross_revenue
+    name: Gross Revenue
+    concept_type: metric
+    description: >-
+      Total sales value of all order line items before discounts, tax,
+      shipping, or returns are applied.
+    aliases: ["Gross Sales", "Gross Merchandise Value", "GMV"]
+    related_terms: ["Revenue", "Sales"]
+    example_questions:
+      - "What was our gross merchandise value last year?"
+      - "Show gross revenue by product category."
+    calculation_description: >-
+      Sum of every order line item's unit price times quantity, before
+      any deductions.
+    formula:
+      expression: "SUM(order_items.unit_price * order_items.quantity)"
+      variables: ["unit_price", "quantity"]
+    preferred_schema_objects: ["order_items.unit_price", "order_items.quantity"]
+
+  - id: net_revenue
+    name: Net Revenue
+    concept_type: metric
+    description: "Revenue after subtracting refunded amounts from returns."
+    aliases: ["Net Sales"]
+    related_terms: ["Gross Revenue", "Revenue", "Discount"]
+    example_questions:
+      - "What is our net revenue after returns this quarter?"
+    calculation_description: "Total order revenue minus total refunded amount."
+    formula:
+      expression: "SUM(orders.total_amount) - SUM(returns.refund_amount)"
+      variables: ["total_amount", "refund_amount"]
+    preferred_schema_objects: ["orders.total_amount", "returns.refund_amount"]
+
+  - id: sales
+    name: Sales
+    concept_type: metric
+    description: >-
+      The commercial activity of orders placed by customers, typically
+      measured by count or total value.
+    aliases: ["Sales Volume", "Sales Total"]
+    related_terms: ["Revenue", "Order Value"]
+    example_questions:
+      - "How many sales did we make today?"
+      - "Show total sales by sales channel."
+    calculation_description: >-
+      Depending on context, either the count of orders placed or the
+      total revenue they generated.
+    preferred_schema_objects: ["orders.order_id", "orders.total_amount"]
+
+  - id: average_order_value
+    name: Average Order Value
+    concept_type: metric
+    description: "The average amount a customer spends per order."
+    aliases: ["AOV", "Average Basket Size", "Average Order Size"]
+    related_terms: ["Order Value", "Revenue"]
+    example_questions:
+      - "What is our average order value?"
+      - "How has AOV changed month over month?"
+    calculation_description: "Total order revenue divided by the number of orders."
+    formula:
+      expression: "SUM(orders.total_amount) / COUNT(orders.order_id)"
+      variables: ["total_amount", "order_id"]
+    preferred_schema_objects: ["orders.total_amount", "orders.order_id"]
+
+  - id: inventory_value
+    name: Inventory Value
+    concept_type: metric
+    description: "The total cost value of all inventory currently held across warehouses."
+    aliases: ["Stock Value", "Inventory Worth"]
+    related_terms: ["Inventory Turnover", "Stock Availability"]
+    example_questions:
+      - "What is the total value of inventory on hand?"
+      - "How much is our warehouse stock worth?"
+    calculation_description: "Quantity on hand multiplied by unit cost, summed across every product/warehouse pair."
+    formula:
+      expression: "SUM(inventory.quantity_on_hand * products.cost_price)"
+      variables: ["quantity_on_hand", "cost_price"]
+    preferred_schema_objects: ["inventory.quantity_on_hand", "products.cost_price"]
+
+  - id: inventory_turnover
+    name: Inventory Turnover
+    concept_type: metric
+    description: "How many times inventory is sold and replaced over a given period."
+    aliases: ["Stock Turnover", "Turnover Ratio"]
+    related_terms: ["Inventory Value", "Stock Availability"]
+    example_questions:
+      - "What is our inventory turnover rate?"
+      - "Which products have the slowest inventory turnover?"
+    calculation_description: >-
+      Cost of goods sold over a period, divided by the average inventory
+      value held over that same period.
+    formula:
+      expression: "Cost of Goods Sold / Average Inventory Value"
+      variables: ["cost_of_goods_sold", "average_inventory_value"]
+    preferred_schema_objects:
+      ["order_items.quantity", "products.cost_price", "inventory.quantity_on_hand"]
+
+  - id: customer_lifetime_value
+    name: Customer Lifetime Value
+    concept_type: metric
+    description: >-
+      The total revenue a customer is expected to generate across their
+      entire relationship with the business.
+    aliases: ["CLV", "LTV", "Lifetime Value"]
+    related_terms: ["Top Customer", "Repeat Customer", "Revenue"]
+    example_questions:
+      - "What is the average customer lifetime value?"
+      - "Which customers have the highest lifetime value?"
+    calculation_description: "Sum of total order value across a customer's complete order history."
+    formula:
+      expression: "SUM(orders.total_amount) grouped by orders.customer_id"
+      variables: ["total_amount", "customer_id"]
+    preferred_schema_objects: ["orders.total_amount", "orders.customer_id"]
+
+  - id: repeat_customer
+    name: Repeat Customer
+    concept_type: segment
+    description: "A customer who has placed more than one order."
+    aliases: ["Returning Customer", "Repeat Buyer"]
+    related_terms: ["Active Customer", "Top Customer", "Customer Lifetime Value"]
+    example_questions:
+      - "How many repeat customers do we have?"
+      - "What percentage of customers are returning buyers?"
+    calculation_description: "A customer with an order count of 2 or more."
+    preferred_schema_objects: ["orders.customer_id", "orders.order_id"]
+
+  - id: top_customer
+    name: Top Customer
+    concept_type: segment
+    description: "A customer ranked highest by total spend or order volume."
+    aliases: ["Best Customer", "VIP Customer", "Highest Value Customer"]
+    related_terms: ["Customer Lifetime Value", "Repeat Customer"]
+    example_questions:
+      - "Who are our top 10 customers by revenue?"
+      - "Show our VIP customers."
+    calculation_description: "Customers ranked by total order value, descending."
+    preferred_schema_objects: ["customers.customer_id", "orders.total_amount"]
+
+  - id: active_customer
+    name: Active Customer
+    concept_type: status
+    description: "A customer whose account is active and has ordered within a recent period."
+    aliases: ["Currently Active Customer"]
+    related_terms: ["Inactive Customer", "Repeat Customer"]
+    example_questions:
+      - "How many active customers do we have?"
+      - "List active customers who ordered this month."
+    calculation_description: >-
+      An account flagged active, typically combined with a recent order
+      date within a defined lookback window.
+    preferred_schema_objects: ["customers.is_active", "orders.order_date"]
+
+  - id: inactive_customer
+    name: Inactive Customer
+    concept_type: status
+    description: >-
+      A customer who has not placed an order in a long time, or whose
+      account is deactivated.
+    aliases: ["Dormant Customer", "Churned Customer"]
+    related_terms: ["Active Customer"]
+    example_questions:
+      - "How many inactive customers do we have?"
+      - "Show customers who haven't ordered in over a year."
+    calculation_description: >-
+      An account flagged inactive, or with no orders within a defined
+      lookback window.
+    preferred_schema_objects: ["customers.is_active", "orders.order_date"]
+
+  - id: order_value
+    name: Order Value
+    concept_type: metric
+    description: "The total monetary amount of a single order."
+    aliases: ["Order Total", "Order Amount"]
+    related_terms: ["Average Order Value", "Revenue"]
+    example_questions:
+      - "What was the value of order #12345?"
+      - "Show orders with a value over $500."
+    calculation_description: "The final charged total for one order, including tax and shipping."
+    preferred_schema_objects: ["orders.total_amount"]
+
+  - id: lead_time
+    name: Lead Time
+    concept_type: metric
+    description: "The number of days a supplier takes to fulfill a restocking order."
+    aliases: ["Supplier Lead Time", "Delivery Lead Time"]
+    related_terms: ["Supplier Performance", "Shipment Delay"]
+    example_questions:
+      - "Which supplier has the longest lead time?"
+      - "What is the average supplier lead time?"
+    calculation_description: "Days between placing a restock order with a supplier and receiving it."
+    preferred_schema_objects: ["suppliers.lead_time_days"]
+
+  - id: return_rate
+    name: Return Rate
+    concept_type: metric
+    description: "The proportion of ordered items that are returned."
+    aliases: ["Return Percentage"]
+    related_terms: ["Review Rating"]
+    example_questions:
+      - "What is our product return rate?"
+      - "Which products have the highest return rate?"
+    calculation_description: "Count of returned line items divided by count of all order line items."
+    formula:
+      expression: "COUNT(returns.return_id) / COUNT(order_items.order_item_id)"
+      variables: ["return_id", "order_item_id"]
+    preferred_schema_objects: ["returns.return_id", "order_items.order_item_id"]
+
+  - id: review_rating
+    name: Review Rating
+    concept_type: metric
+    description: "The star rating a customer gives a product in a review."
+    aliases: ["Product Rating", "Star Rating", "Customer Rating"]
+    related_terms: ["Return Rate"]
+    example_questions:
+      - "What is the average review rating for this product?"
+      - "Show products with a rating below 3 stars."
+    calculation_description: "Average of the star ratings (1-5) submitted in product reviews."
+    preferred_schema_objects: ["product_reviews.rating"]
+
+  - id: promotion_usage
+    name: Promotion Usage
+    concept_type: metric
+    description: "How often a promotion or discount code is applied to orders."
+    aliases: ["Coupon Usage", "Discount Usage"]
+    related_terms: ["Net Revenue"]
+    example_questions:
+      - "How often are promotions used at checkout?"
+      - "Which promotion has been used the most?"
+    calculation_description: "Count of orders that applied a promotion, divided by all orders."
+    formula:
+      expression: "COUNT(orders WHERE promotion_id IS NOT NULL) / COUNT(orders)"
+      variables: ["promotion_id"]
+    preferred_schema_objects: ["orders.promotion_id", "promotions.promotion_id"]
+
+  - id: payment_success_rate
+    name: Payment Success Rate
+    concept_type: metric
+    description: "The proportion of payment attempts that are successfully captured."
+    aliases: ["Payment Success Percentage", "Transaction Success Rate"]
+    related_terms: []
+    example_questions:
+      - "What is our payment success rate?"
+      - "How many payments failed last month?"
+    calculation_description: "Count of captured payments divided by count of all payment attempts."
+    formula:
+      expression: "COUNT(payments WHERE payment_status = 'captured') / COUNT(payments)"
+      variables: ["payment_status"]
+    preferred_schema_objects: ["payments.payment_status"]
+
+  - id: shipment_delay
+    name: Shipment Delay
+    concept_type: metric
+    description: >-
+      The time between when a shipment was expected and when it
+      actually shipped or was delivered.
+    aliases: ["Shipping Delay", "Delivery Delay"]
+    related_terms: ["Lead Time", "Supplier Performance"]
+    example_questions:
+      - "What is our average shipment delay?"
+      - "Which carrier has the most delayed shipments?"
+    calculation_description: "Difference between the actual and expected ship/delivery timestamps."
+    preferred_schema_objects: ["shipments.shipped_at", "shipments.delivered_at"]
+
+  - id: stock_availability
+    name: Stock Availability
+    concept_type: metric
+    description: "Whether a product currently has inventory on hand above its reorder level."
+    aliases: ["In Stock", "Stock Level"]
+    related_terms: ["Inventory Value", "Warehouse Capacity"]
+    example_questions:
+      - "Which products are out of stock?"
+      - "Show products below their reorder level."
+    calculation_description: "Quantity on hand compared against the configured reorder level."
+    preferred_schema_objects: ["inventory.quantity_on_hand", "inventory.reorder_level"]
+
+  - id: warehouse_capacity
+    name: Warehouse Capacity
+    concept_type: attribute
+    description: >-
+      The storage/fulfillment capacity of a warehouse — not directly
+      tracked as a numeric column in the current schema, but inferable
+      from the volume of inventory it holds.
+    aliases: ["Fulfillment Capacity"]
+    related_terms: ["Stock Availability", "Inventory Value"]
+    example_questions:
+      - "Which warehouse is nearest capacity?"
+      - "How much inventory is stored at each warehouse?"
+    calculation_description: >-
+      No direct capacity column exists; approximated from the count and
+      quantity of inventory rows held per warehouse.
+    preferred_schema_objects: ["warehouses.warehouse_id", "inventory.warehouse_id"]
+
+  - id: supplier_performance
+    name: Supplier Performance
+    concept_type: kpi
+    description: >-
+      A composite view of how reliably and quickly a supplier fulfills
+      orders, combining lead time and quality rating.
+    aliases: ["Vendor Performance", "Supplier Rating"]
+    related_terms: ["Lead Time"]
+    example_questions:
+      - "Which suppliers perform the best?"
+      - "Rank suppliers by performance."
+    calculation_description: "A composite judgment combining supplier lead time and supplier rating."
+    preferred_schema_objects: ["suppliers.lead_time_days", "suppliers.rating"]
