@@ -20,6 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from querymind.prompt_compiler.exceptions import PromptCompilationError
 from querymind.query_library.models import SQLDialect
 
 
@@ -39,6 +40,57 @@ class SectionName(str, Enum):
     RETRIEVED_EXAMPLES = "retrieved_examples"
     CONSTRAINT = "constraint"
     OUTPUT_FORMAT = "output_format"
+
+
+class SectionSpec(_FrozenModel):
+    """One section's configuration within a `PromptTemplate`: its header, order, and default inclusion."""
+
+    name: SectionName
+    header: str = Field(
+        description="The heading rendered above this section's content, e.g. '## Schema Context'."
+    )
+    order: int = Field(ge=1, description="Position in the assembled prompt — lower renders first.")
+    include_by_default: bool = Field(
+        default=True,
+        description="Whether a compiler should build this section unless told otherwise.",
+    )
+
+
+class PromptTemplate(_FrozenModel):
+    """Defines section ordering, headers, and default inclusion for prompt assembly.
+
+    Data only — the actual section *content* is always produced by the
+    dedicated builders in `sections.py`; a template never generates text
+    itself. `DefaultPromptTemplate` (in `querymind.prompt_compiler.templates`)
+    is the standard implementation; "future extensibility" means a
+    different `PromptTemplate` (different headers, a different order, a
+    subset of sections) is just another instance of this same shape, not
+    a change to this class.
+
+    Defined here, not in `templates.py`, so that `CompiledPrompt` below
+    can store the exact `PromptTemplate` instance used to compile it —
+    `templates.py` already imports `SectionName` from this module, and a
+    reverse import (this module needing `templates.py`) would be
+    circular. `templates.py` imports `PromptTemplate`/`SectionSpec` back
+    from here to define `DefaultPromptTemplate`.
+    """
+
+    version: str
+    name: str
+    section_specs: tuple[SectionSpec, ...]
+
+    def spec_for(self, name: SectionName) -> SectionSpec:
+        """Return the `SectionSpec` for `name`. Raises `PromptCompilationError` if not in this template."""
+        for spec in self.section_specs:
+            if spec.name is name:
+                return spec
+        raise PromptCompilationError(
+            f"Template {self.name!r} (v{self.version}) has no spec for {name.value!r}."
+        )
+
+    def ordered_names(self) -> tuple[SectionName, ...]:
+        """Every section name in this template, sorted by `SectionSpec.order`."""
+        return tuple(spec.name for spec in sorted(self.section_specs, key=lambda spec: spec.order))
 
 
 #: Trim order for the three trimmable sections (`is_required=False`),
@@ -177,12 +229,28 @@ class PromptStatistics(_FrozenModel):
     )
 
 
+def _default_prompt_template() -> PromptTemplate:
+    """The default value for `CompiledPrompt.template` when a caller doesn't supply one.
+
+    A local import — not a mistake: `DefaultPromptTemplate` lives in
+    `querymind.prompt_compiler.templates`, which imports `PromptTemplate`
+    from *this* module, so a top-level import here would be circular.
+    Deferred until this factory actually runs, by which point both
+    modules are fully loaded.
+    """
+    from querymind.prompt_compiler.templates import DefaultPromptTemplate
+
+    return DefaultPromptTemplate()
+
+
 class CompiledPrompt(_FrozenModel):
     """The complete output of one compilation: all seven sections, plus statistics.
 
     Every field a caller needs is a direct attribute; call `as_text()`
     to render the whole thing into one prompt string via
-    `querymind.prompt_compiler.formatter.PromptFormatter`.
+    `querymind.prompt_compiler.formatter.PromptFormatter`, using the
+    exact `template` this prompt was compiled with — never a silently
+    substituted default.
     """
 
     system: SystemSection
@@ -193,6 +261,13 @@ class CompiledPrompt(_FrozenModel):
     constraints: ConstraintSection
     output_format: OutputSection
     statistics: PromptStatistics
+    template: PromptTemplate = Field(
+        default_factory=_default_prompt_template,
+        description="The exact PromptTemplate instance used to assemble this prompt — "
+        "`as_text()` renders with this, never a substituted default. `template_version` "
+        "below is redundant with `template.version`, kept only for backward compatibility "
+        "with callers that read the plain string.",
+    )
     template_version: str = Field(
         description="The PromptTemplate.version used to assemble this prompt."
     )
@@ -213,7 +288,7 @@ class CompiledPrompt(_FrozenModel):
         )
 
     def as_text(self) -> str:
-        """Render this prompt into one string, via `PromptFormatter`.
+        """Render this prompt into one string, via `PromptFormatter`, using `self.template`.
 
         A local import — not a mistake: `PromptFormatter` needs
         `CompiledPrompt` for its own type signature, so a top-level
@@ -223,4 +298,4 @@ class CompiledPrompt(_FrozenModel):
         """
         from querymind.prompt_compiler.formatter import PromptFormatter
 
-        return PromptFormatter().format(self)
+        return PromptFormatter(self.template).format(self)

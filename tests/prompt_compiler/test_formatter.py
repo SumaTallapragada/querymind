@@ -10,12 +10,14 @@ from querymind.prompt_compiler.models import (
     ExampleSection,
     OutputSection,
     PromptStatistics,
+    PromptTemplate,
     RelationshipSection,
     SchemaSection,
     SectionName,
+    SectionSpec,
     SystemSection,
 )
-from querymind.prompt_compiler.templates import DefaultPromptTemplate, PromptTemplate, SectionSpec
+from querymind.prompt_compiler.templates import DefaultPromptTemplate
 from querymind.query_library.models import SQLDialect
 
 

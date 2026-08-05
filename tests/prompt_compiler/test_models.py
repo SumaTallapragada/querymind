@@ -13,12 +13,15 @@ from querymind.prompt_compiler.models import (
     ExampleSection,
     OutputSection,
     PromptStatistics,
+    PromptTemplate,
     RelationshipSection,
     SchemaSection,
     SectionName,
+    SectionSpec,
     SectionTokenUsage,
     SystemSection,
 )
+from querymind.prompt_compiler.templates import DefaultPromptTemplate
 from querymind.query_library.models import SQLDialect
 
 
@@ -32,19 +35,42 @@ def _statistics() -> PromptStatistics:
     )
 
 
-def _compiled_prompt() -> CompiledPrompt:
-    return CompiledPrompt(
-        system=SystemSection(content="sys", estimated_tokens=1),
-        business_context=BusinessSection(content="biz", estimated_tokens=1),
-        schema_context=SchemaSection(content="schema", estimated_tokens=1, schema_objects=("t",)),
-        relationships=RelationshipSection(content="rel", estimated_tokens=1),
-        examples=ExampleSection(content="ex", estimated_tokens=1, example_ids=("e1",)),
-        constraints=ConstraintSection(content="con", estimated_tokens=1),
-        output_format=OutputSection(content="out", estimated_tokens=1),
-        statistics=_statistics(),
-        template_version="1.0.0",
-        dialect=SQLDialect.POSTGRESQL,
-    )
+def _compiled_prompt(**overrides: object) -> CompiledPrompt:
+    defaults: dict[str, object] = {
+        "system": SystemSection(content="sys", estimated_tokens=1),
+        "business_context": BusinessSection(content="biz", estimated_tokens=1),
+        "schema_context": SchemaSection(
+            content="schema", estimated_tokens=1, schema_objects=("t",)
+        ),
+        "relationships": RelationshipSection(content="rel", estimated_tokens=1),
+        "examples": ExampleSection(content="ex", estimated_tokens=1, example_ids=("e1",)),
+        "constraints": ConstraintSection(content="con", estimated_tokens=1),
+        "output_format": OutputSection(content="out", estimated_tokens=1),
+        "statistics": _statistics(),
+        "template_version": "1.0.0",
+        "dialect": SQLDialect.POSTGRESQL,
+    }
+    defaults.update(overrides)
+    return CompiledPrompt(**defaults)  # type: ignore[arg-type]
+
+
+#: A custom template whose headers are deliberately unlike `DefaultPromptTemplate`'s,
+#: so a test can prove `as_text()` is (or isn't) actually using it.
+_CUSTOM_TEMPLATE = PromptTemplate(
+    version="9.9.9-custom",
+    name="custom",
+    section_specs=(
+        SectionSpec(name=SectionName.SYSTEM, header="# CUSTOM SYSTEM HEADER", order=1),
+        SectionSpec(name=SectionName.BUSINESS_CONTEXT, header="## Business Context", order=2),
+        SectionSpec(name=SectionName.SCHEMA_CONTEXT, header="## Schema Context", order=3),
+        SectionSpec(name=SectionName.RELATIONSHIP, header="## Table Relationships", order=4),
+        SectionSpec(
+            name=SectionName.RETRIEVED_EXAMPLES, header="## CUSTOM EXAMPLES HEADER", order=5
+        ),
+        SectionSpec(name=SectionName.CONSTRAINT, header="## CUSTOM CONSTRAINTS HEADER", order=6),
+        SectionSpec(name=SectionName.OUTPUT_FORMAT, header="## Output Format", order=7),
+    ),
+)
 
 
 class TestSectionDefaults:
@@ -107,6 +133,43 @@ class TestCompiledPrompt:
         text = prompt.as_text()
         assert "sys" in text
         assert "out" in text
+
+    def test_template_defaults_to_default_prompt_template_when_not_given(self) -> None:
+        # Backward compatibility: every existing CompiledPrompt(...) construction across
+        # the codebase omits `template=` -- it must keep working exactly as before.
+        prompt = _compiled_prompt()
+        assert prompt.template == DefaultPromptTemplate()
+
+    def test_default_prompt_template_still_renders_correctly(self) -> None:
+        prompt = _compiled_prompt()
+        text = prompt.as_text()
+        assert "# System Instructions" in text
+        assert "## Similar Examples" in text
+        assert "## Constraints" in text
+
+    def test_as_text_preserves_the_template_used_during_compilation(self) -> None:
+        # The core fix: as_text() must render with *this* CompiledPrompt's own
+        # template, not silently substitute DefaultPromptTemplate.
+        prompt = _compiled_prompt(template=_CUSTOM_TEMPLATE)
+        text = prompt.as_text()
+        assert "# CUSTOM SYSTEM HEADER" in text
+        assert "## CUSTOM EXAMPLES HEADER" in text
+        assert "## CUSTOM CONSTRAINTS HEADER" in text
+
+    def test_as_text_never_silently_falls_back_to_default_template_when_a_custom_one_was_used(
+        self,
+    ) -> None:
+        # Regression test for the original Phase 12 bug: a CompiledPrompt built with a
+        # custom template must never show DefaultPromptTemplate's generic headers.
+        prompt = _compiled_prompt(template=_CUSTOM_TEMPLATE)
+        text = prompt.as_text()
+        assert "## Similar Examples" not in text
+        assert "## Constraints" not in text
+
+    def test_template_field_is_the_actual_template_object_not_just_a_version_string(self) -> None:
+        prompt = _compiled_prompt(template=_CUSTOM_TEMPLATE)
+        assert prompt.template == _CUSTOM_TEMPLATE
+        assert prompt.template.spec_for(SectionName.SYSTEM).header == "# CUSTOM SYSTEM HEADER"
 
 
 class TestSectionTokenUsage:

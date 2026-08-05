@@ -5,12 +5,8 @@ from __future__ import annotations
 import pytest
 
 from querymind.prompt_compiler.exceptions import PromptCompilationError
-from querymind.prompt_compiler.models import SectionName
-from querymind.prompt_compiler.templates import (
-    DefaultPromptTemplate,
-    PromptTemplate,
-    SectionSpec,
-)
+from querymind.prompt_compiler.models import PromptTemplate, SectionName, SectionSpec
+from querymind.prompt_compiler.templates import DefaultPromptTemplate
 
 
 class TestDefaultPromptTemplate:

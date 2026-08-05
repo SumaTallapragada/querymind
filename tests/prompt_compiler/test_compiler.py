@@ -43,6 +43,31 @@ class TestCompile:
         compiled = PromptCompiler().compile(bundle)
         assert compiled.template_version == DefaultPromptTemplate().version
 
+    def test_the_actual_template_used_is_stored_on_the_result(
+        self, bundle: RetrievedKnowledgeBundle
+    ) -> None:
+        template = DefaultPromptTemplate()
+        compiled = PromptCompiler(template=template).compile(bundle)
+        assert compiled.template == template
+
+    def test_a_custom_templates_headers_survive_into_as_text(
+        self, bundle: RetrievedKnowledgeBundle
+    ) -> None:
+        from querymind.prompt_compiler.models import PromptTemplate
+
+        custom_template = PromptTemplate(
+            version="2.0.0-custom",
+            name="custom",
+            section_specs=tuple(
+                spec.model_copy(update={"header": f"## CUSTOM {spec.name.value.upper()}"})
+                for spec in DefaultPromptTemplate().section_specs
+            ),
+        )
+        compiled = PromptCompiler(template=custom_template).compile(bundle)
+        text = compiled.as_text()
+        assert "## CUSTOM SYSTEM" in text
+        assert "## Similar Examples" not in text
+
     def test_statistics_reflect_the_retrieved_examples_and_schema_objects(
         self, bundle: RetrievedKnowledgeBundle
     ) -> None:

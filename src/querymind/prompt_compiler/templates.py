@@ -6,26 +6,21 @@ appear, in what order, under what header. It never generates section
 what lets a future template (a more compact one, a differently ordered
 one) be added without touching a single section builder.
 
-Also the one place canonical, reusable prompt *text* (the system
-preamble, the constraint rules, the output-format instructions) lives —
-`sections.py`'s builders reference these constants rather than each
-embedding its own copy of similar wording, so there is exactly one
-place to edit the wording of an instruction.
+`PromptTemplate`/`SectionSpec` themselves are defined in `models.py`,
+not here — `CompiledPrompt` (also in `models.py`) stores the exact
+`PromptTemplate` instance it was compiled with, and this module already
+imports `SectionName` from `models.py`, so defining `PromptTemplate`
+here too would make that a circular import. This module owns the
+*default* template (`DefaultPromptTemplate`) and the canonical, reusable
+prompt *text* (the system preamble, the constraint rules, the
+output-format instructions) — `sections.py`'s builders reference these
+constants rather than each embedding its own copy of similar wording, so
+there is exactly one place to edit the wording of an instruction.
 """
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from querymind.prompt_compiler.exceptions import PromptCompilationError
-from querymind.prompt_compiler.models import SectionName
-
-
-class _FrozenModel(BaseModel):
-    """Shared base: frozen, and rejects unknown fields (fail fast on typos)."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
+from querymind.prompt_compiler.models import PromptTemplate, SectionName, SectionSpec
 
 #: The system/role preamble every compiled prompt opens with.
 SYSTEM_PREAMBLE = (
@@ -51,49 +46,6 @@ OUTPUT_FORMAT_INSTRUCTION = (
     "keywords in uppercase (SELECT, FROM, WHERE, GROUP BY, ...). Do not wrap the SQL in "
     "markdown code fences or add trailing commentary."
 )
-
-
-class SectionSpec(_FrozenModel):
-    """One section's configuration within a `PromptTemplate`: its header, order, and default inclusion."""
-
-    name: SectionName
-    header: str = Field(
-        description="The heading rendered above this section's content, e.g. '## Schema Context'."
-    )
-    order: int = Field(ge=1, description="Position in the assembled prompt — lower renders first.")
-    include_by_default: bool = Field(
-        default=True,
-        description="Whether a compiler should build this section unless told otherwise.",
-    )
-
-
-class PromptTemplate(_FrozenModel):
-    """Defines section ordering, headers, and default inclusion for prompt assembly.
-
-    Data only — the actual section *content* is always produced by the
-    dedicated builders in `sections.py`; a template never generates text
-    itself. `DefaultPromptTemplate` is the standard implementation;
-    "future extensibility" means a different `PromptTemplate` (different
-    headers, a different order, a subset of sections) is just another
-    instance of this same shape, not a change to this class.
-    """
-
-    version: str
-    name: str
-    section_specs: tuple[SectionSpec, ...]
-
-    def spec_for(self, name: SectionName) -> SectionSpec:
-        """Return the `SectionSpec` for `name`. Raises `PromptCompilationError` if not in this template."""
-        for spec in self.section_specs:
-            if spec.name is name:
-                return spec
-        raise PromptCompilationError(
-            f"Template {self.name!r} (v{self.version}) has no spec for {name.value!r}."
-        )
-
-    def ordered_names(self) -> tuple[SectionName, ...]:
-        """Every section name in this template, sorted by `SectionSpec.order`."""
-        return tuple(spec.name for spec in sorted(self.section_specs, key=lambda spec: spec.order))
 
 
 #: The seven sections, in pipeline order, with their default headers —

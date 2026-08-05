@@ -8,8 +8,8 @@ class's job, driven by a `PromptTemplate`).
 
 from __future__ import annotations
 
-from querymind.prompt_compiler.models import CompiledPrompt
-from querymind.prompt_compiler.templates import DefaultPromptTemplate, PromptTemplate
+from querymind.prompt_compiler.models import CompiledPrompt, PromptTemplate
+from querymind.prompt_compiler.templates import DefaultPromptTemplate
 
 
 class PromptFormatter:

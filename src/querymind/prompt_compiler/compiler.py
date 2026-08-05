@@ -26,6 +26,7 @@ from querymind.prompt_compiler.models import (
     OutputSection,
     PromptSection,
     PromptStatistics,
+    PromptTemplate,
     RelationshipSection,
     SchemaSection,
     SectionTokenUsage,
@@ -40,7 +41,7 @@ from querymind.prompt_compiler.sections import (
     SchemaSectionBuilder,
     SystemSectionBuilder,
 )
-from querymind.prompt_compiler.templates import DefaultPromptTemplate, PromptTemplate
+from querymind.prompt_compiler.templates import DefaultPromptTemplate
 from querymind.prompt_compiler.validator import PromptValidator
 from querymind.query_library.models import SQLDialect
 from querymind.retrieval.models import RetrievedKnowledgeBundle
@@ -148,6 +149,7 @@ class PromptCompiler:
             statistics=self._build_statistics(
                 trimmed_sections=tuple(trimmed.values()), started=started
             ),
+            template=self._template,
             template_version=self._template.version,
             dialect=dialect,
         )

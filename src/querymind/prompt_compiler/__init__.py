@@ -33,13 +33,15 @@ from querymind.prompt_compiler.models import (
     OutputSection,
     PromptSection,
     PromptStatistics,
+    PromptTemplate,
     RelationshipSection,
     SchemaSection,
     SectionName,
+    SectionSpec,
     SystemSection,
 )
 from querymind.prompt_compiler.serializer import PromptCompilerSerializer
-from querymind.prompt_compiler.templates import DefaultPromptTemplate, PromptTemplate, SectionSpec
+from querymind.prompt_compiler.templates import DefaultPromptTemplate
 from querymind.prompt_compiler.validator import PromptValidationReport, PromptValidator
 
 __all__ = [
