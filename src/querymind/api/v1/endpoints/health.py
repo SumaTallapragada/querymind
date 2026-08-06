@@ -20,7 +20,7 @@ from fastapi import APIRouter, status
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from querymind.api.deps import DbSessionDep
+from querymind.api.dependencies import DbSessionDep
 
 router = APIRouter(prefix="/health", tags=["health"])
 

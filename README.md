@@ -11,9 +11,13 @@ composed by a single orchestrator into one end-to-end pipeline.
 
 **Status:** the core engine (natural language question → `BusinessAnswer`)
 is feature-complete through Phase 15 and fully covered by tests running
-against a real PostgreSQL database. It is not yet exposed over HTTP — see
-[Project roadmap](#project-roadmap) and
-[`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) for the complete
+against a real PostgreSQL database. As of Phase 16 it is also exposed over
+a thin FastAPI HTTP service layer — see [HTTP API](#http-api) below — with
+every route delegating straight to the same engines the library entry
+point uses. As of Phase 17, that same pipeline's progress can also be
+streamed in real time over Server-Sent Events or WebSockets — see
+[Streaming](#streaming-sse--websockets). See [Project roadmap](#project-roadmap)
+and [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md) for the complete
 list of what this release does not include.
 
 ## Goals
@@ -120,12 +124,129 @@ stages and returns one immutable `QueryMindResponse` — see
 [`SYSTEM_DESIGN.md`](SYSTEM_DESIGN.md) for what flows between every stage
 and why each phase exists.
 
+## HTTP API
+
+Phase 16 adds a FastAPI service layer over the pipeline described above.
+Every route is deliberately thin — it validates the request, resolves a
+dependency-injected engine, calls that engine's own public entry point, and
+returns its result as-is; no route generates, validates, repairs, or
+executes SQL itself, and no business logic exists in `querymind.api`. All
+routes are mounted under `settings.api_v1_prefix` (`/api/v1` by default).
+
+| Method | Path | Calls | Returns |
+|---|---|---|---|
+| `POST` | `/query` | `QueryMindEngine.ask` | `QueryMindResponse` — the complete pipeline, end to end |
+| `POST` | `/query/sql` | `QueryMindEngine.ask_for_sql` | `GeneratedSqlResult` — generation through conditional repair, never executes |
+| `POST` | `/query/validate` | `SQLValidationEngine.validate` | `SQLValidationResult` — validates externally supplied SQL |
+| `POST` | `/query/repair` | `QueryMindEngine.repair` | `SQLRepairResult` — repairs SQL that failed validation |
+| `POST` | `/query/execute` | `SQLExecutionEngine.execute` | `SQLExecutionResult` — executes already-validated SQL, read-only |
+| `POST` | `/query/format` | `ResultFormatterEngine.format` | `BusinessAnswer` — formats a successful execution result |
+| `GET` | `/health` | `HealthCheckEngine.check` | `HealthReport` — `503` if `overall_status` is `unhealthy` |
+| `GET` | `/health/live` | *(none — process liveness only)* | `{"status": "ok"}` |
+| `GET` | `/health/diagnostics` | `DiagnosticsEngine.run` | `DiagnosticsReport` — `503` only if `overall_status` is `error` |
+| `GET` | `/health/metrics` | `MetricsCollector.snapshot` | `MetricsSnapshot` — point-in-time, never resets counters |
+
+Every request carries an `X-Request-ID`/`X-Correlation-ID` pair (accepted
+from inbound headers when present, otherwise generated) that is echoed
+back on the response and bound to every structured log line emitted while
+handling it, via `querymind.observability`'s own `StageInstrumentation` —
+reused here exactly as it instruments a pipeline stage, just wrapping one
+HTTP request instead.
+
+Example — the primary endpoint, end to end:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Who are our top 5 customers by revenue?"}'
+```
+
+```json
+{
+  "original_question": "Who are our top 5 customers by revenue?",
+  "status": "success",
+  "generated_sql": {"sql": "SELECT ... LIMIT 5;"},
+  "business_answer": {"answer_type": "ranked_list", "formatted_table": {"...": "..."}},
+  "error": null
+}
+```
+
+`status` (`success`/`failed`), not the HTTP status code, is how a caller
+distinguishes a pipeline-level failure from success — `POST /query` always
+returns `200` for a completed run, exactly as `QueryMindEngine.ask` never
+raises. Genuinely unexpected failures (a misconfigured collaborator, an
+unreachable database) are instead mapped by
+`querymind.api.exception_handlers` onto the appropriate `4xx`/`5xx` status,
+with a body of the form `{"detail": "...", "error_type": "..."}` and no
+traceback ever leaked to the client. Interactive OpenAPI docs (request/
+response examples, full schemas) are served at `/docs` once the app is
+running.
+
+## Streaming (SSE & WebSockets)
+
+Phase 17 adds real-time progress over the same pipeline `POST /query`
+runs — no SQL generated, validated, repaired, executed, or formatted
+differently; streaming only reports what `QueryMindEngine.ask` is
+already doing, as it happens. Both endpoints emit the same sequence of
+events and end with a `pipeline_completed`/`pipeline_failed` event
+carrying the `BusinessAnswer`:
+
+| Event | When |
+|---|---|
+| `pipeline_started` | The run began. |
+| `stage_started` / `stage_completed` | Each of NLU, schema linking, business knowledge, retrieval, prompt compilation, SQL generation, the LLM call, validation, (conditional) repair, execution, and result formatting. |
+| `stage_failed` | A stage's own call raised. |
+| `heartbeat` | Sent periodically once a run has taken more than a few seconds, so the connection never looks stalled. |
+| `pipeline_completed` | The run finished — `payload.status` (`success`/`failed`) and, on success, `payload.business_answer`. |
+| `pipeline_failed` | The run raised — `payload.error_type`/`error_message`. |
+
+**Server-Sent Events** — `POST /api/v1/query/stream`, `text/event-stream`:
+
+```bash
+curl -N -X POST http://localhost:8000/api/v1/query/stream \
+  -H "Content-Type: application/json" \
+  -d '{"question": "Who are our top 5 customers by revenue?"}'
+```
+
+```
+event: pipeline_started
+data: {"event_id":"...","correlation_id":"...","event_type":"pipeline_started","payload":{"original_question":"Who are our top 5 customers by revenue?"}}
+
+event: stage_started
+data: {"event_id":"...","pipeline_stage":"nlu","event_type":"stage_started","payload":{}}
+
+...
+
+event: pipeline_completed
+data: {"event_id":"...","event_type":"pipeline_completed","payload":{"status":"success","business_answer":{"...":"..."}}}
+```
+
+**WebSocket** — `/ws/query` (unversioned): send one `{"question": "..."}` message, receive the
+same events as JSON text frames, connection closes after the terminal one.
+
+```javascript
+const ws = new WebSocket("ws://localhost:8000/ws/query");
+ws.onopen = () => ws.send(JSON.stringify({ question: "Who are our top 5 customers by revenue?" }));
+ws.onmessage = (msg) => {
+  const event = JSON.parse(msg.data);
+  console.log(event.event_type, event.payload);
+};
+```
+
+Every event shares one correlation ID with the HTTP request that opened
+the stream (SSE) or the connection itself (WebSocket) — the same ID
+`RequestContextMiddleware` already binds to every structured log line
+for that request. If a client disconnects mid-stream, the pipeline call
+still in flight is cancelled and cleaned up server-side; nothing is left
+running. See [`ARCHITECTURE.md`](ARCHITECTURE.md#18-streaming-phase-17)
+for how events get from `PipelineRunner` to the wire.
+
 ## Technology stack
 
 | Concern | Choice |
 |---|---|
 | Language | Python 3.12 |
-| Web framework | FastAPI (health endpoints only today — see [roadmap](#project-roadmap)) |
+| Web framework | FastAPI — a thin presentation layer over the pipeline; see [HTTP API](#http-api) |
 | Database | PostgreSQL 16, async via SQLAlchemy 2.0 + asyncpg |
 | Migrations | Alembic (async) |
 | Data models | Pydantic v2 — every cross-phase model is `frozen=True`, `extra="forbid"` |
@@ -216,6 +337,8 @@ network with `httpx.MockTransport`, so no test ever makes a real API call.
 
 ```bash
 uv run pytest tests/orchestrator -q   # one phase's suite in isolation
+uv run pytest tests/api -q            # the HTTP API layer (unit + integration)
+uv run pytest tests/streaming -q      # SSE/WebSocket streaming (unit + integration)
 uv run pytest -q                      # the whole repository
 ```
 
@@ -238,10 +361,12 @@ make check   # lint + typecheck + test
 
 ## Example usage
 
-The engine is not yet exposed over HTTP (see
-[roadmap](#project-roadmap)) — today it is used as a Python library. The
-composition root wires one already-constructed instance of every phase's
-own public entry point into a `PipelineRunner`, then a `QueryMindEngine`:
+Most callers should use the [HTTP API](#http-api) — `POST /query` runs
+exactly the sequence below. The engine remains fully usable as a plain
+Python library too (this is what `querymind.api.container.ApplicationContainer`
+itself does at startup): wire one already-constructed instance of every
+phase's own public entry point into a `PipelineRunner`, then a
+`QueryMindEngine`:
 
 ```python
 import asyncio
@@ -315,9 +440,11 @@ for a worked example with real output.
 
 ```
 src/querymind/
-├── main.py                # FastAPI composition root (app factory)
+├── main.py                # Thin re-export of querymind.api.app.create_app
 ├── core/                    # Settings, logging — read by every layer
-├── api/                     # Presentation layer (health endpoints today)
+├── api/                     # Phase 16 — FastAPI presentation layer (app.py, container.py,
+│                            #   dependencies.py, lifespan.py, middleware.py,
+│                            #   exception_handlers.py, routers/, models/)
 ├── db/                      # Async engine/session infrastructure
 ├── models/                  # SQLAlchemy ORM models (14 domain tables)
 ├── seeds/                   # Synthetic dataset generation + persistence
@@ -334,7 +461,10 @@ src/querymind/
 ├── sql_repair/                 # Phase 12  — SQL Repair Engine
 ├── sql_execution/               # Phase 13  — SQL Execution Engine
 ├── result_formatter/            # Phase 14  — Result Formatter / Answer Generator
-└── orchestrator/                # Phase 15  — End-to-End QueryMind Orchestrator
+├── orchestrator/                # Phase 15  — End-to-End QueryMind Orchestrator
+└── streaming/                   # Phase 17  — SSE/WebSocket progress streaming (models.py,
+                               #   event_bus.py, publisher.py, subscriber.py, events.py,
+                               #   serializer.py, sse.py, websocket.py, cache.py)
 
 tests/                        # One directory per package above, same names
 scripts/seed_database.py       # CLI entry point for seed generation
@@ -351,18 +481,16 @@ Implemented (Phases 1–15.5, released as v1.0.0): application foundation,
 database schema and seeding, metadata engine, the complete eleven-stage
 text-to-SQL pipeline described above ending at an immutable
 `BusinessAnswer`, and a stabilization/release-readiness pass — see
-[`VERSION_HISTORY.md`](VERSION_HISTORY.md) for the full narrative.
+[`VERSION_HISTORY.md`](VERSION_HISTORY.md) for the full narrative. Phase
+16 adds the FastAPI service layer described in [HTTP API](#http-api);
+Phase 17 adds the real-time streaming described in
+[Streaming](#streaming-sse--websockets).
 
 Not yet implemented — explicitly deferred, phase by phase, throughout this
 project's history (see [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md)
 for the complete, current list):
 
-- REST API surface for the pipeline itself (`/query` or equivalent) —
-  today `QueryMindEngine` is a library entry point, not an HTTP endpoint.
 - CLI for interactive question-asking.
-- Streaming responses.
-- Observability/metrics export beyond the per-stage timings already
-  collected in `PipelineStatistics`.
 - Authentication/authorization.
 - A frontend (React or otherwise).
 - Result visualization — charts, HTML tables, CSV/Excel export.

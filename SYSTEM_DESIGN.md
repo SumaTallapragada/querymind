@@ -164,6 +164,66 @@ one `StageTiming` per stage that actually completed, `repair_attempted`,
 `repair_performed`), a `status` (`SUCCESS`/`FAILED`), and `error` (only on
 failure).
 
+### `GeneratedSqlResult` — produced by `QueryMindEngine.ask_for_sql` (`querymind.orchestrator.models`), added Phase 16
+
+The same NLU-through-conditional-repair sequence as `QueryMindResponse`,
+stopping before SQL Execution and Result Formatting: `original_question`,
+`generated_sql`, `validation_result`, `repair_result` (`None` if repair
+never ran), and `PipelineStatistics`. Added specifically to back the `POST
+/query/sql` HTTP endpoint (see
+[`ARCHITECTURE.md` §17](ARCHITECTURE.md#17-http-presentation-layer-phase-16)),
+which must never execute SQL — unlike `QueryMindResponse`, there is no
+`status`/`error` pair, since a genuine failure at any stage still
+propagates as `PipelineExecutionError` rather than being represented as a
+soft-failure field.
+
+## How the HTTP API exposes these models
+
+`querymind.api` (Phase 16) does not introduce a second set of response
+models: every route above returns one of the models in this document
+directly, serialized by Pydantic/FastAPI exactly as constructed by the
+engine that produced it — `POST /query` returns a `QueryMindResponse`,
+`POST /query/sql` a `GeneratedSqlResult`, `POST /query/validate` a
+`SQLValidationResult`, and so on. See the [README](README.md#http-api) for
+the full endpoint table and a worked request/response example, and
+[`ARCHITECTURE.md` §17](ARCHITECTURE.md#17-http-presentation-layer-phase-16)
+for how the presentation layer is wired.
+
+## How streaming reports progress through these models (Phase 17)
+
+`querymind.streaming` doesn't introduce a second pipeline or a second
+set of *result* models either — every value in this document above is
+still produced by exactly the engine that always produced it, in
+exactly the same sequence. What Phase 17 adds is one new model,
+`PipelineEvent` (`querymind.streaming.models`, nine subclasses — see
+[`ARCHITECTURE.md` §18](ARCHITECTURE.md#18-streaming-phase-17)), that
+reports *when* each of the transformations above starts and finishes,
+in real time, as `PipelineRunner.run` executes:
+
+```
+pipeline_started
+  -> stage_started(nlu)      -> stage_completed(nlu)          [QueryContext produced]
+  -> stage_started(schema_linking) -> stage_completed(...)    [LinkedQueryContext produced]
+  -> ... one started/completed pair per remaining stage ...
+  -> stage_started(sql_execution)  -> stage_completed(...)    [SQLExecutionResult produced]
+  -> stage_started(result_formatting) -> stage_completed(...) [BusinessAnswer produced]
+-> pipeline_completed                                         [QueryMindResponse — carries the
+                                                                 same BusinessAnswer, embedded
+                                                                 in payload.business_answer]
+```
+
+A `stage_failed` event (instead of that stage's own `stage_completed`)
+plus a final `pipeline_failed` event replace the above whenever a stage's
+own call raises — the same `PipelineExecutionError` conversion
+`QueryMindEngine.ask` always performed (see
+[§16](ARCHITECTURE.md#16-orchestration-flow) above) still happens
+identically; streaming only adds visibility into it, never a different
+outcome. `PipelineCompletedEvent`'s `payload.business_answer` is the
+exact same `BusinessAnswer` (`.model_dump(mode="json")`) `POST /query`
+would have returned in its own `business_answer` field for the identical
+question — see the [README](README.md#streaming-sse--websockets) for the
+endpoint table and worked SSE/WebSocket examples.
+
 ## Why each phase exists
 
 **NLU exists** because turning free text into structured intent (what kind

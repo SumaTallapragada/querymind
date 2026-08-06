@@ -21,8 +21,9 @@ from querymind.query_library import QueryLibraryRegistry
 from querymind.result_formatter.models import AnswerType
 from querymind.sql_execution import DatabaseConnectionProvider
 from querymind.sql_repair.models import RepairStatus
+from querymind.sql_validation import SQLValidationEngine
 
-from .conftest import make_pipeline_runner, sequential_sql_handler
+from .conftest import make_generated_sql, make_pipeline_runner, sequential_sql_handler
 
 _VALID_SQL = (
     "SELECT c.customer_id, SUM(o.total_amount) AS total_revenue "
@@ -194,3 +195,85 @@ class TestPipelineRequiringRepair:
 
         stages_run = {timing.stage for timing in response.statistics.stage_timings}
         assert stages_run == set(PipelineStage)
+
+
+class TestAskForSql:
+    async def test_a_valid_question_returns_sql_without_executing_it(
+        self,
+        metadata_registry: MetadataRegistry,
+        business_knowledge_registry: BusinessKnowledgeRegistry,
+        query_library: QueryLibraryRegistry,
+        connection_provider: DatabaseConnectionProvider,
+    ) -> None:
+        runner = make_pipeline_runner(
+            handler=sequential_sql_handler([_VALID_SQL]),
+            metadata_registry=metadata_registry,
+            business_knowledge_registry=business_knowledge_registry,
+            query_library=query_library,
+            connection_provider=connection_provider,
+        )
+        engine = QueryMindEngine(runner)
+
+        result = await engine.ask_for_sql("Who are our top 10 customers by revenue?")
+
+        assert result.generated_sql.sql == _VALID_SQL
+        assert result.validation_result.is_valid is True
+        assert result.repair_result is None
+        stages_run = {timing.stage for timing in result.statistics.stage_timings}
+        assert PipelineStage.SQL_EXECUTION not in stages_run
+        assert PipelineStage.RESULT_FORMATTING not in stages_run
+
+    async def test_a_hallucinated_join_is_repaired_without_executing_the_result(
+        self,
+        metadata_registry: MetadataRegistry,
+        business_knowledge_registry: BusinessKnowledgeRegistry,
+        query_library: QueryLibraryRegistry,
+        connection_provider: DatabaseConnectionProvider,
+    ) -> None:
+        runner = make_pipeline_runner(
+            handler=sequential_sql_handler([_BROKEN_SQL, _VALID_SQL]),
+            metadata_registry=metadata_registry,
+            business_knowledge_registry=business_knowledge_registry,
+            query_library=query_library,
+            connection_provider=connection_provider,
+        )
+        engine = QueryMindEngine(runner)
+
+        result = await engine.ask_for_sql("Who are our top 10 customers by revenue?")
+
+        assert result.repair_result is not None
+        assert result.repair_result.status is RepairStatus.REPAIRED
+        assert result.generated_sql.sql == _VALID_SQL
+
+
+class TestRepair:
+    async def test_repairs_a_hallucinated_join_given_only_the_question_and_validation_result(
+        self,
+        metadata_registry: MetadataRegistry,
+        business_knowledge_registry: BusinessKnowledgeRegistry,
+        query_library: QueryLibraryRegistry,
+        connection_provider: DatabaseConnectionProvider,
+    ) -> None:
+        # A second Claude response is scripted for repair_sql's own generation-free repair
+        # call (SQLRepairEngine talks to the LLM directly, not through SQLGenerationEngine).
+        runner = make_pipeline_runner(
+            handler=sequential_sql_handler([_VALID_SQL]),
+            metadata_registry=metadata_registry,
+            business_knowledge_registry=business_knowledge_registry,
+            query_library=query_library,
+            connection_provider=connection_provider,
+        )
+        engine = QueryMindEngine(runner)
+
+        validation_engine = SQLValidationEngine(metadata_registry, business_knowledge_registry)
+        broken = make_generated_sql(_BROKEN_SQL)
+        validation_result = validation_engine.validate(broken)
+        assert validation_result.is_valid is False
+
+        repair_result = await engine.repair(
+            "Who are our top 10 customers by revenue?", validation_result
+        )
+
+        assert repair_result.status is RepairStatus.REPAIRED
+        assert repair_result.final_sql.sql == _VALID_SQL
+        assert repair_result.original_sql is broken

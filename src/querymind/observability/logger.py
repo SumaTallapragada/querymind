@@ -111,6 +111,22 @@ class Logger(Protocol):
         """Emit a `LogEvent` as a `StructuredLogRecord`."""
         ...
 
+    def debug(self, message: str, **fields: object) -> StructuredLogRecord:
+        """Emit one `DEBUG`-level record. Shorthand for `log(LogLevel.DEBUG, ...)`."""
+        ...
+
+    def info(self, message: str, **fields: object) -> StructuredLogRecord:
+        """Emit one `INFO`-level record. Shorthand for `log(LogLevel.INFO, ...)`."""
+        ...
+
+    def warning(self, message: str, **fields: object) -> StructuredLogRecord:
+        """Emit one `WARNING`-level record. Shorthand for `log(LogLevel.WARNING, ...)`."""
+        ...
+
+    def error(self, message: str, **fields: object) -> StructuredLogRecord:
+        """Emit one `ERROR`-level record. Shorthand for `log(LogLevel.ERROR, ...)`."""
+        ...
+
 
 class StructuredLogger:
     """The default `Logger` implementation. Builds a `StructuredLogRecord`, writes it via `LogSink`.

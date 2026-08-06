@@ -38,10 +38,16 @@ which is unrelated to the text-to-SQL pipeline.
 
 ## Streaming
 
-**No streaming responses.** `LLMAdapter.generate` and every phase after
-it work with a complete response, not a token stream. `QueryMindEngine
-.ask()` returns one complete `QueryMindResponse` after the entire pipeline
-finishes; there is no partial or incremental result delivery.
+**No token-level streaming.** `LLMAdapter.generate` and every phase after
+it still work with a complete response, not a token stream — `Claude
+Provider` makes one ordinary (non-streaming) Messages API call, and
+`QueryMindEngine.ask()` still returns one complete `QueryMindResponse`
+only once the entire pipeline finishes. What Phase 17 (`querymind
+.streaming`) adds instead is *progress* streaming: `POST /query/stream`
+(SSE) and `/ws/query` (WebSocket) report each pipeline stage
+starting/completing/failing as it happens, ending with the same
+complete `QueryMindResponse`/`BusinessAnswer` a non-streamed `POST
+/query` call would return — never a partial or incremental *result*.
 
 ## Authentication and authorization
 

@@ -58,6 +58,7 @@ from querymind.models.base import Base
 from querymind.nlu import QueryParser
 from querymind.nlu.models import AggregationType, Intent, QueryContext
 from querymind.nlu.time import DefaultTimeExtractor
+from querymind.orchestrator.models import GeneratedSqlResult, PipelineStatistics
 from querymind.orchestrator.pipeline import PipelineRunner
 from querymind.prompt_compiler import PromptCompiler
 from querymind.prompt_compiler.models import (
@@ -531,3 +532,20 @@ def make_execution_result(
 def make_business_answer(execution_result: SQLExecutionResult) -> BusinessAnswer:
     """Build a real `BusinessAnswer` via the real `ResultFormatterEngine` -- never hand-built."""
     return ResultFormatterEngine().format(execution_result)
+
+
+def make_generated_sql_result(
+    generated_sql: GeneratedSQL,
+    validation_result: SQLValidationResult,
+    *,
+    repair_result: SQLRepairResult | None = None,
+) -> GeneratedSqlResult:
+    return GeneratedSqlResult(
+        original_question="Who are our top customers by revenue?",
+        generated_sql=generated_sql,
+        validation_result=validation_result,
+        repair_result=repair_result,
+        statistics=PipelineStatistics(
+            total_latency_ms=10.0, stage_timings=(), repair_attempted=False, repair_performed=False
+        ),
+    )

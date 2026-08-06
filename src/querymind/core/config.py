@@ -20,6 +20,16 @@ from urllib.parse import quote_plus
 from pydantic import Field, PostgresDsn, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from querymind.llm.config import (
+    DEFAULT_CLAUDE_BASE_URL,
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_RETRY_COUNT,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TIMEOUT_SECONDS,
+    LLMProviderConfig,
+)
+from querymind.llm.models import LLMProvider
+
 Environment = Literal["development", "staging", "production", "test"]
 LogFormat = Literal["json", "console"]
 
@@ -68,6 +78,22 @@ class Settings(BaseSettings):
     database_pool_timeout: int = Field(default=30, ge=1)
     database_echo: bool = Field(default=False)
 
+    # -- LLM provider (Phase 16) ---------------------------------------------
+    # `llm_api_key` defaults to empty rather than being required: a missing key is a real,
+    # legitimate deployment state (the pipeline simply isn't configured to call an LLM yet)
+    # that `querymind.observability.DiagnosticsEngine`'s `llm_configuration` check already
+    # reports correctly, not something that should prevent the application from starting at
+    # all -- unlike `postgres_password`, an application with no database connection can't
+    # serve *any* traffic, but one with no LLM key can still serve health/diagnostics traffic.
+    llm_provider: LLMProvider = Field(default=LLMProvider.CLAUDE)
+    llm_model: str = Field(default="claude-sonnet-5")
+    llm_api_key: SecretStr = Field(default=SecretStr(""))
+    llm_temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=1.0)
+    llm_max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, gt=0)
+    llm_timeout_seconds: float = Field(default=DEFAULT_TIMEOUT_SECONDS, gt=0.0)
+    llm_retry_count: int = Field(default=DEFAULT_RETRY_COUNT, ge=0)
+    llm_base_url: str = Field(default=DEFAULT_CLAUDE_BASE_URL)
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
@@ -91,6 +117,25 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"
+
+    @property
+    def llm_provider_config(self) -> LLMProviderConfig:
+        """Build the `LLMProviderConfig` the LLM Adapter needs, from the discrete `llm_*` fields.
+
+        Mirrors `database_url`: one place assembles the real, phase-owned
+        config object from `Settings`' own fields, so every caller (the
+        API container, a script) gets the exact same construction logic.
+        """
+        return LLMProviderConfig(
+            provider=self.llm_provider,
+            model=self.llm_model,
+            api_key=self.llm_api_key,
+            temperature=self.llm_temperature,
+            max_tokens=self.llm_max_tokens,
+            timeout=self.llm_timeout_seconds,
+            retry_count=self.llm_retry_count,
+            base_url=self.llm_base_url,
+        )
 
 
 @lru_cache(maxsize=1)

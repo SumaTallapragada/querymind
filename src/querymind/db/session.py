@@ -3,9 +3,9 @@
 This module is intentionally framework-agnostic (no FastAPI imports): it
 only knows how to turn an :class:`AsyncEngine` into sessions. Wiring this
 up as a FastAPI dependency — which needs access to the request-scoped
-engine on ``app.state`` — lives in ``querymind.api.deps``. Keeping the two
-separate means the persistence layer stays usable outside of a web request
-(e.g. from a CLI script or a background worker) in later phases.
+engine on ``app.state`` — lives in ``querymind.api.dependencies``. Keeping
+the two separate means the persistence layer stays usable outside of a web
+request (e.g. from a CLI script or a background worker).
 """
 
 from __future__ import annotations

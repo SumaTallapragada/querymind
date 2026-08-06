@@ -104,3 +104,29 @@ class QueryMindResponse(_FrozenModel):
     statistics: PipelineStatistics
     status: PipelineStatus
     error: str | None = Field(default=None, description="Populated only when status is FAILED.")
+
+
+class GeneratedSqlResult(_FrozenModel):
+    """The output of `QueryMindEngine.ask_for_sql`/`PipelineRunner.generate_sql` -- NLU through
+    conditional repair, stopping before execution and result formatting. Added in Phase 16 for
+    the `/query/sql` HTTP endpoint, which must never execute SQL.
+
+    Unlike `QueryMindResponse`, there is no `status`/`error` pair here --
+    `generate_sql` has no "soft failure" case of its own (there is no
+    execution status to be soft about); a genuine failure at any stage
+    propagates as `PipelineExecutionError` instead of being represented
+    as a field on this model.
+    """
+
+    original_question: str
+    generated_sql: GeneratedSQL = Field(
+        description="The SQL ultimately produced -- the repaired SQL if repair ran, else the "
+        "first SQL SQL_GENERATION produced."
+    )
+    validation_result: SQLValidationResult = Field(
+        description="The validation result for generated_sql, specifically."
+    )
+    repair_result: SQLRepairResult | None = Field(
+        default=None, description="None whenever repair never ran."
+    )
+    statistics: PipelineStatistics
