@@ -1,10 +1,12 @@
 """Synthetic data generation framework for the approved Phase 2 schema.
 
-This package defines the *shape* of seeding: reusable generator
-infrastructure (`base.py`), generic helpers (`utils.py`), one generator
-class per domain table, and an orchestration entry point (`generator.py`)
-that fixes the order generators must run in. No fake data is produced and
-no database is touched anywhere in this package yet — every `generate()`
-method is a documented stub. Wiring generators together and persisting
-their output is Phase 4 scope.
+Reusable generator infrastructure (`base.py`), generic helpers
+(`utils.py`), one generator class per domain table, business-consistency
+rules (`rules/`), and an orchestration entry point
+(`generator.py::SeedOrchestrator`) that runs every generator in a fixed
+dependency order and persists each stage's output through a
+`TransactionRunner` (`persistence.py::AsyncSessionTransactionRunner`)
+before the next stage begins. `scripts/seed_database.py` is the CLI
+entry point that wires this package to a real database connection — see
+`docs/getting-started.md`.
 """

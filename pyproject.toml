@@ -1,7 +1,7 @@
 [project]
 name = "querymind"
-version = "0.1.0"
-description = "Production-grade Text-to-SQL Analytics Engine — Phase 1: application foundation"
+version = "1.0.0"
+description = "QueryMind Core Engine — a text-to-SQL analytics pipeline: natural language question to validated, executed SQL and a formatted answer"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Proprietary" }
