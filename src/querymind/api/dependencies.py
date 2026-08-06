@@ -20,6 +20,19 @@ auto-injects a concrete `Request` for HTTP routes / a concrete
 `WebSocket` for WebSocket routes, never either for the other. Every
 dependency built on top of `ContainerDep` therefore already works for
 both transports with no changes of its own.
+
+`SettingsDep` reads `container.settings`, *not*
+`querymind.core.config.get_settings()` (the `lru_cache`d process-wide
+singleton `create_app` falls back to when no explicit `Settings` is
+given) -- the two can genuinely differ: a test builds its own `Settings`
+instance and passes it to `create_app(settings=...)` explicitly, but the
+very first call to `get_settings()` anywhere in the process (by any
+test, in any order) permanently caches *that* call's result for the rest
+of the process. A route depending on `get_settings` directly would
+silently see whichever `Settings` happened to be constructed first,
+never necessarily the one its own app was actually built from -- found
+via `GET /settings` (Phase 18) returning the real `.env`'s database name
+instead of a test's hermetic one.
 """
 
 from __future__ import annotations
@@ -32,7 +45,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import HTTPConnection
 
 from querymind.api.container import ApplicationContainer
-from querymind.core.config import Settings, get_settings
+from querymind.core.config import Settings
 from querymind.db.session import transactional_session
 from querymind.observability.diagnostics import DiagnosticsEngine
 from querymind.observability.health import HealthCheckEngine
@@ -43,8 +56,6 @@ from querymind.result_formatter import ResultFormatterEngine
 from querymind.sql_execution import SQLExecutionEngine
 from querymind.sql_validation import SQLValidationEngine
 from querymind.streaming.event_bus import EventBus
-
-SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 async def get_db_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -70,6 +81,13 @@ def get_container(conn: HTTPConnection) -> ApplicationContainer:
 
 
 ContainerDep = Annotated[ApplicationContainer, Depends(get_container)]
+
+
+def get_settings(container: ContainerDep) -> Settings:
+    return container.settings
+
+
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 def get_query_mind_engine(container: ContainerDep) -> QueryMindEngine:

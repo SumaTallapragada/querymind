@@ -16,6 +16,7 @@ from querymind.api.routers import (
     metrics,
     query,
     repair,
+    settings,
     sql,
     validation,
 )
@@ -36,6 +37,7 @@ api_router.include_router(formatting.router)
 api_router.include_router(full_health.router)
 api_router.include_router(diagnostics.router)
 api_router.include_router(metrics.router)
+api_router.include_router(settings.router)
 # `POST /query/stream` (Phase 17) joins the rest of the `/query/*` family here, under
 # `/api/v1`; `/ws/query` (`querymind.streaming.websocket`) is mounted directly on the app in
 # `querymind.api.app`, unversioned, matching the spec's literal `/ws/query` path.
