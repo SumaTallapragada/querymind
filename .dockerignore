@@ -13,10 +13,22 @@ __pycache__
 
 .pytest_cache
 .coverage
+coverage
 htmlcov
 .mypy_cache
 .ruff_cache
 
+dist
+build
+node_modules
+logs
+tmp
+
 tests
 Makefile
 docker-compose.yml
+
+# Frontend has its own build context (frontend/Dockerfile + frontend/.dockerignore); never
+# needed inside the backend image, and node_modules alone would otherwise dwarf the build
+# context sent to the Docker daemon.
+frontend
