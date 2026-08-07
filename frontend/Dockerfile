@@ -34,5 +34,12 @@ COPY --from=builder /app/dist /usr/share/nginx/html
 # by default (binding <1024 requires root, which this image deliberately never has).
 EXPOSE 8080
 
+# `127.0.0.1`, not `localhost`: nginx's `listen 8080;` binds IPv4 only, but this image's
+# /etc/hosts resolves `localhost` to both 127.0.0.1 and ::1, and Alpine's musl libc prefers the
+# IPv6 result (RFC 6724) regardless of /etc/hosts order -- wget then tries `[::1]:8080` first
+# and gets a real connection refusal (nothing is listening there), never falling back to the
+# working IPv4 address. Pinning the literal IPv4 address removes the ambiguity entirely rather
+# than making nginx dual-stack, which would risk `bind() to [::]:8080 failed` on a Docker
+# network without IPv6 enabled (the default on Docker Desktop's bridge network).
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD wget -qO- http://localhost:8080/ >/dev/null || exit 1
+    CMD wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1
