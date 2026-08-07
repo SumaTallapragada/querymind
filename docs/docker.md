@@ -1,10 +1,10 @@
-# Docker (Phase 19A)
+# Docker (Phases 19A–19B)
 
-Containerization for the QueryMind backend and frontend, built independently. This covers only
-what Phase 19A ships: two production images (`Dockerfile.backend`, `frontend/Dockerfile`) and
-the pre-existing `docker-compose.yml` (backend + Postgres, unchanged this phase). It does not
-cover a combined frontend+backend Compose stack, GitHub Actions/CI, or Kubernetes — those are
-later phases.
+Containerization for the QueryMind backend and frontend. Phase 19A shipped two independently
+buildable production images (`Dockerfile.backend`, `frontend/Dockerfile`). Phase 19B wires both
+into `docker-compose.yml` as a complete three-service local production stack (`db` + `app` +
+`frontend`) behind one reverse proxy, on one shared network, started and stopped with a single
+command. It does not cover GitHub Actions/CI or Kubernetes — those are later phases.
 
 ## Images
 
@@ -17,15 +17,17 @@ Both are multi-stage: a builder stage with the toolchain (`uv`/`npm`) and source
 stage that only ever receives the already-built artifact (a `.venv` for the backend, `dist/`
 for the frontend) — no compiler, package manager, or source tree ships in the final image.
 
-### Relationship to the existing root `Dockerfile`
+### Relationship to the legacy root `Dockerfile`
 
-The repository already had a root `Dockerfile` backing `docker-compose.yml` (backend + Postgres)
-before this phase, and it's left untouched here — Compose changes are explicitly out of scope
-for Phase 19A. `Dockerfile.backend` is the new, standalone production image this phase adds; the
-only functional difference is that it makes the listen port configurable via the existing
-`APP_PORT` environment variable (`Settings.app_port`) instead of hardcoding `8000`. Reconciling
-the two — or wiring `Dockerfile.backend` and `frontend/Dockerfile` into one Compose stack — is
-Phase 19B.
+The repository's original root `Dockerfile` (pre-Phase 19A) still exists, unmodified, but
+`docker-compose.yml`'s `app` service now builds from `Dockerfile.backend` instead, as of Phase
+19B — the two were never functionally reconciled by editing either one; Compose was simply
+pointed at the newer image. The only difference between them is that `Dockerfile.backend` makes
+the listen port configurable via `APP_PORT` (`EXPOSE`/`HEALTHCHECK`/`uvicorn --port` all read
+it) instead of hardcoding `8000`, which is also why `docker-compose.yml`'s `app.ports` mapping
+is `${APP_PORT:-8000}:${APP_PORT:-8000}` (both sides move together) rather than a hardcoded
+container-side `8000`. The legacy `Dockerfile` is unused by Compose now and kept only for
+anyone still building from it directly.
 
 ## Development
 
@@ -36,9 +38,65 @@ uv sync && make run          # backend, with autoreload, against a reachable Pos
 cd frontend && npm run dev   # frontend, with HMR, proxying /api and /ws to localhost:8000
 ```
 
-or `make docker-up` (the existing `docker-compose.yml`) for backend + Postgres together. Neither
-of Phase 19A's new images is meant for hot-reload development — they're both standalone
-production builds.
+or `make docker-up`/`docker compose up -d` for the full stack (below). Neither of Phase 19A's
+images is meant for hot-reload development — both are standalone production builds, and so is
+the Compose stack they're wired into.
+
+## Docker Compose: the full local production stack
+
+`docker-compose.yml` runs all three services together, on one Compose-managed network
+(`querymind`), with the frontend reverse-proxying REST/SSE/WebSocket traffic to the backend --
+the same topology a real deployment would use, running locally.
+
+```bash
+docker compose up -d --build   # one-command startup: db -> app -> frontend, in health order
+docker compose ps              # all three should show "healthy"
+docker compose down            # one-command shutdown; add -v to also delete the Postgres volume
+```
+
+Once healthy, the whole application is reachable at `http://localhost:${FRONTEND_PORT:-8080}/`
+-- the frontend serves the SPA and transparently proxies `/api/*`, the SSE endpoint, and
+`/ws/*` to `app`, so nothing in the browser needs to know the backend exists on a different
+port (or in a different container) at all.
+
+### What's new vs. the Phase 19A images alone
+
+- **`frontend` service**: builds `frontend/Dockerfile`, published on `${FRONTEND_PORT:-8080}`
+  (host) -> `8080` (container), `depends_on: app: condition: service_healthy`.
+- **`app` now builds from `Dockerfile.backend`**, not the legacy root `Dockerfile` (see above).
+- **Explicit `querymind` network**: all three services attached to a named bridge network
+  instead of relying on Compose's implicit default one -- functionally equivalent (Compose's
+  default network is already a user-defined bridge with the same embedded DNS), but
+  self-documenting for a stack meant to look like a real deployment.
+- **`frontend/nginx.conf`'s REST/SSE/WebSocket `location` blocks are active**, proxying to
+  `app:8000` through a Docker-DNS-resolved variable rather than a literal hostname (see the
+  comment at the top of `nginx.conf` for why: a literal, unresolvable `proxy_pass` target
+  would prevent nginx from starting at all, not just fail that one route).
+
+### Verifying the stack
+
+```bash
+# REST
+curl http://localhost:${FRONTEND_PORT:-8080}/api/v1/health
+
+# Direct query (replace with a real question against your seeded data)
+curl -X POST http://localhost:${FRONTEND_PORT:-8080}/api/v1/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How many rows are in the customers table?"}'
+
+# SSE (Ctrl+C once you see event: frames)
+curl -N -X POST http://localhost:${FRONTEND_PORT:-8080}/api/v1/query/stream \
+  -H "Content-Type: application/json" \
+  -d '{"question": "How many rows are in the customers table?"}'
+```
+
+A WebSocket client is needed for `/ws/query` (`curl` doesn't speak WebSocket) -- the frontend
+itself exercises it directly from the browser (Dashboard page, streaming mode, WebSocket
+transport).
+
+**Persistent volume**: `postgres_data` is unchanged from Phase 19A/before -- `docker compose
+down` (without `-v`) followed by `docker compose up -d` again brings the same data back, since
+the named volume isn't removed. Only `docker compose down -v` deletes it.
 
 ## Production
 
@@ -114,19 +172,22 @@ exactly as it does locally.
 See `.env.example` for the complete list (logging, SQLAlchemy pool tuning, LLM generation
 parameters) — every one of them already works unchanged inside the container.
 
-The frontend image takes no runtime environment variables in Phase 19A: `VITE_*` variables
+The frontend image takes no runtime environment variables: `VITE_*` variables
 (`services/api.ts`, `services/streaming.ts`) are Vite build-time values, baked into the static
-bundle at `docker build` time, not read at container start. To point a build at a non-default
-API origin, pass them as build args... — not added in Phase 19A, since the default (same-origin,
-proxied) is what every existing deployment path uses; see `frontend/README.md`.
+bundle at `docker build` time, not read at container start. This is deliberately never needed
+under Compose — both default to same-origin, relative paths (`/api/v1`, `/ws/query`), which is
+exactly what `frontend/nginx.conf`'s proxy blocks now serve; see `frontend/README.md`.
 
 ## Health checks
 
 - **Backend**: `HEALTHCHECK` polls `GET http://localhost:${APP_PORT}/api/v1/health/live`
   (`querymind.api.routers.health`'s liveness endpoint — no database round trip, just "is the
   process up") every 30s, 5s timeout, 3 retries, 10s start period.
-- **Frontend**: `HEALTHCHECK` polls `GET http://localhost:8080/` (nginx serving `index.html`)
-  every 30s, 5s timeout, 3 retries, 5s start period.
+- **Frontend**: `HEALTHCHECK` polls `GET http://127.0.0.1:8080/` (nginx serving `index.html` --
+  `127.0.0.1`, not `localhost`; see the Troubleshooting entry below) every 30s, 5s timeout, 3
+  retries, 5s start period. `docker-compose.yml` sets the same check explicitly at the service
+  level, for parity with `db`/`app` and visibility in `docker compose ps` without needing to
+  inspect the image.
 
 Check a running container's status with `docker inspect --format='{{.State.Health.Status}}' <container>`.
 
@@ -167,12 +228,28 @@ repo root as build context).
 Confirms the image built without the SPA fallback — check that `nginx.conf`'s `location /`
 `try_files $uri $uri/ /index.html;` line made it into the image
 (`docker exec <container> cat /etc/nginx/conf.d/default.conf`). A plain `docker run` of this
-image serves the app shell correctly on every route; only actual API calls need a reachable
-backend (see "API proxy placeholders" in `frontend/nginx.conf` — commented out in Phase 19A).
+image (no Compose network) serves the app shell correctly on every route; only the proxied
+`/api/*`, `/api/v1/query/stream`, and `/ws/*` routes need a reachable `app` (see `frontend/nginx.conf`).
 
 **Frontend health check fails but the container looks fine in `docker logs`.**
 The unprivileged nginx image has no `curl`; the `HEALTHCHECK` uses `wget` (present via BusyBox on
 Alpine). If you've modified the base image, confirm `wget` is still on `PATH`.
+
+**Frontend `HEALTHCHECK`/`wget` fails with "Connection refused" even though `netstat -tln`
+inside the container shows nginx listening on `0.0.0.0:8080`.**
+Fixed as of the Phase 19A healthcheck follow-up — `wget http://localhost:8080/` resolved
+`localhost` to `::1` (IPv6) via the image's `/etc/hosts` and Alpine musl's RFC 6724 address
+preference, which nginx (IPv4-only `listen 8080;`) was never listening on. The `HEALTHCHECK`
+(and `docker-compose.yml`'s service-level check) now target `127.0.0.1` explicitly. If you see
+this again after modifying `frontend/Dockerfile` or `docker-compose.yml`, confirm neither
+reintroduced a bare `localhost`.
+
+**`docker compose up` starts `frontend` before `app` is actually ready, and proxied requests
+502 for a few seconds.**
+Confirm `docker-compose.yml`'s `frontend` service still has `depends_on: app: condition:
+service_healthy`, not just `depends_on: [app]` (which only waits for the container to start,
+not for `app`'s own healthcheck to pass) — `condition: service_healthy` is what makes nginx's
+`resolver`-based proxy_pass reliably find `app` already listening on the shared network.
 
 **`docker run --env-file .env` fails at startup with a `Settings` "literal_error" on `app_env`/`log_format`.**
 `.env`/`.env.example` are written for `python-dotenv` (via `pydantic-settings`'s `env_file=".env"`),

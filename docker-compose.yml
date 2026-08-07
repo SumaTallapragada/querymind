@@ -22,11 +22,17 @@ services:
       timeout: 5s
       retries: 10
       start_period: 5s
+    networks:
+      - querymind
 
   app:
     build:
       context: .
-      dockerfile: Dockerfile
+      # Phase 19B: built from Dockerfile.backend (the Phase 19A production image with a
+      # container-configurable listen port), not the legacy root Dockerfile it superseded —
+      # its EXPOSE/HEALTHCHECK/CMD all read APP_PORT, which is why `ports:` and `healthcheck:`
+      # below both key off ${APP_PORT} too, rather than a hardcoded 8000.
+      dockerfile: Dockerfile.backend
     restart: unless-stopped
     env_file:
       - .env
@@ -39,16 +45,51 @@ services:
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
     ports:
-      - "${APP_PORT:-8000}:8000"
+      # Both sides must move together: Dockerfile.backend's uvicorn actually binds to
+      # $APP_PORT inside the container now (unlike the legacy Dockerfile, which always bound
+      # 8000 regardless of APP_PORT) — mapping to a hardcoded container-side 8000 here would
+      # silently break if APP_PORT were ever changed away from its default.
+      - "${APP_PORT:-8000}:${APP_PORT:-8000}"
     depends_on:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health/live').read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${APP_PORT:-8000}/api/v1/health/live').read()"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - querymind
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-8080}:8080"
+    depends_on:
+      # Not just "container running" -- nginx.conf's proxy_pass targets resolve the `app`
+      # hostname once, at nginx startup; without waiting for `app` to be healthy (i.e.
+      # actually serving on the Compose network, not merely started), nginx could start before
+      # `app`'s DNS entry / listening socket exists.
+      app:
+        condition: service_healthy
+    healthcheck:
+      # 127.0.0.1, not localhost -- see the Phase 19A healthcheck fix in frontend/Dockerfile;
+      # this mirrors that same fix at the Compose level.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - querymind
 
 volumes:
   postgres_data:
+
+networks:
+  querymind:
+    driver: bridge
