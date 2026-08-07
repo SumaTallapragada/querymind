@@ -4,7 +4,12 @@ Containerization for the QueryMind backend and frontend. Phase 19A shipped two i
 buildable production images (`Dockerfile.backend`, `frontend/Dockerfile`). Phase 19B wires both
 into `docker-compose.yml` as a complete three-service local production stack (`db` + `app` +
 `frontend`) behind one reverse proxy, on one shared network, started and stopped with a single
-command. It does not cover GitHub Actions/CI or Kubernetes — those are later phases.
+command. It does not cover Kubernetes or cloud hosting — those are later phases.
+
+Phase 19D (GitHub Actions) builds directly on everything in this document: `backend.yml`/
+`frontend.yml`/`docker.yml` build these exact same two images on every push/PR (never pushed
+anywhere), and `integration.yml` runs this exact `docker-compose.yml` stack, on demand and
+nightly, against a real PostgreSQL. See [`docs/ci-cd.md`](ci-cd.md).
 
 ## Images
 

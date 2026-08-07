@@ -1,7 +1,17 @@
 # QueryMind — Text-to-SQL Analytics Engine
 
+[![Backend CI](https://github.com/SumaTallapragada/querymind/actions/workflows/backend.yml/badge.svg)](https://github.com/SumaTallapragada/querymind/actions/workflows/backend.yml)
+[![Frontend CI](https://github.com/SumaTallapragada/querymind/actions/workflows/frontend.yml/badge.svg)](https://github.com/SumaTallapragada/querymind/actions/workflows/frontend.yml)
+[![Docker](https://github.com/SumaTallapragada/querymind/actions/workflows/docker.yml/badge.svg)](https://github.com/SumaTallapragada/querymind/actions/workflows/docker.yml)
+[![Integration](https://github.com/SumaTallapragada/querymind/actions/workflows/integration.yml/badge.svg)](https://github.com/SumaTallapragada/querymind/actions/workflows/integration.yml)
+
 **Version:** 1.0.0 (QueryMind Core Engine) — see
 [`CHANGELOG.md`](CHANGELOG.md) and [`VERSION_HISTORY.md`](VERSION_HISTORY.md).
+
+**CI/CD:** every push/PR runs Fast CI (lint, type-check, unit tests, both Docker images) in a
+couple of minutes; the full suite against a real, `docker compose`-provisioned PostgreSQL runs
+nightly, on demand, and on release tags. See [`docs/ci-cd.md`](docs/ci-cd.md) for the full
+two-tier strategy, required secrets, and how to trigger any workflow manually.
 
 QueryMind turns a natural language business question into a real, executed
 SQL query and a formatted answer — without an ORM query, a hardcoded

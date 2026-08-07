@@ -1,0 +1,181 @@
+name: Integration
+
+# Heavy tier (see docs/ci-cd.md): brings up the real docker-compose.yml stack (db + app +
+# frontend) and runs every test that Backend CI deliberately excludes -- the real-Postgres
+# suite (tests/**/test_integration.py plus the individually-deselected tests documented in
+# backend.yml) and the streaming integration tests -- against that real, running stack.
+#
+# Deliberately NOT triggered on push/pull_request: this is minutes-slower and provisions real
+# infrastructure, which doesn't belong on every commit. Runs nightly, on demand, and optionally
+# when a release tag is pushed (a real signal that this exact commit is about to ship).
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    # 03:00 UTC daily. GitHub Actions schedules only fire from the default branch.
+    - cron: "0 3 * * *"
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: integration
+  cancel-in-progress: false # never cancel a real infra run partway through
+
+jobs:
+  integration:
+    name: Full stack against real PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python
+        run: uv python install 3.12
+
+      - name: Install project (for the pytest step, run outside the containers)
+        run: uv sync --frozen
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Real .env, from GitHub Secrets -- see docs/ci-cd.md for the full list. Postgres/LLM
+      # values fall back to a CI-only placeholder if the corresponding secret isn't configured,
+      # so this workflow still runs (against a real, if freshly-provisioned, database) on a
+      # repo that hasn't set every secret up yet; a missing LLM_API_KEY degrades the live-stack
+      # LLM check below to "backend returns a well-formed failure," not a hard workflow failure
+      # -- pytest's own integration suite mocks the LLM transport regardless and needs no key.
+      - name: Write .env from secrets
+        run: |
+          cat <<EOF > .env
+          APP_NAME="Text-to-SQL Analytics Engine"
+          APP_ENV=test
+          APP_DEBUG=false
+          APP_HOST=0.0.0.0
+          APP_PORT=8000
+          API_V1_PREFIX=/api/v1
+          FRONTEND_PORT=8080
+          LOG_LEVEL=INFO
+          LOG_FORMAT=json
+          POSTGRES_USER=${{ secrets.POSTGRES_USER || 'querymind' }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD || 'ci-integration-placeholder' }}
+          POSTGRES_DB=${{ secrets.POSTGRES_DB || 'querymind' }}
+          POSTGRES_HOST=localhost
+          POSTGRES_PORT=5432
+          DATABASE_POOL_SIZE=10
+          DATABASE_MAX_OVERFLOW=5
+          DATABASE_POOL_TIMEOUT=30
+          DATABASE_ECHO=false
+          LLM_PROVIDER=claude
+          LLM_MODEL=claude-sonnet-5
+          LLM_API_KEY=${{ secrets.LLM_API_KEY }}
+          LLM_TEMPERATURE=0.0
+          LLM_MAX_TOKENS=4096
+          LLM_TIMEOUT_SECONDS=30
+          LLM_RETRY_COUNT=3
+          LLM_BASE_URL=https://api.anthropic.com
+          EOF
+
+      - name: Start the stack (db -> app -> frontend)
+        run: docker compose up -d --build
+
+      - name: Wait for PostgreSQL to become healthy
+        run: |
+          for _ in $(seq 1 30); do
+            status=$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q db)")
+            echo "db: $status"
+            [ "$status" = "healthy" ] && exit 0
+            sleep 5
+          done
+          echo "::error::PostgreSQL never became healthy" && exit 1
+
+      - name: Wait for the backend health endpoint
+        run: |
+          for _ in $(seq 1 30); do
+            status=$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q app)")
+            echo "app: $status"
+            if [ "$status" = "healthy" ] && curl -sf http://localhost:8000/api/v1/health >/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Backend never became healthy" && exit 1
+
+      - name: Wait for the frontend health endpoint
+        run: |
+          for _ in $(seq 1 30); do
+            status=$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q frontend)")
+            echo "frontend: $status"
+            if [ "$status" = "healthy" ] && curl -sf http://localhost:8080/ >/dev/null; then
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::Frontend never became healthy" && exit 1
+
+      - name: Real PostgreSQL + streaming integration tests
+        # No exclusions here (contrast backend.yml) -- this is exactly the suite Fast CI
+        # deliberately skips: every tests/**/test_integration.py file plus the individually
+        # DB-dependent tests documented in backend.yml, run for real against the Postgres this
+        # job just started. Runs on the GitHub Actions runner directly (not inside a
+        # container), against the stack's published Postgres port -- the same way local
+        # development already runs `uv run pytest` against a `docker compose`-provisioned
+        # database (see docs/getting-started.md).
+        run: uv run pytest -q
+
+      - name: Validate Docker networking (frontend -> backend, same-origin)
+        run: |
+          direct=$(curl -sf http://localhost:8000/api/v1/health)
+          proxied=$(curl -sf http://localhost:8080/api/v1/health)
+          if [ "$direct" != "$proxied" ]; then
+            echo "::error::Response via the frontend reverse proxy differs from the backend directly"
+            echo "direct:  $direct"
+            echo "proxied: $proxied"
+            exit 1
+          fi
+          echo "Frontend -> backend proxying confirmed identical to a direct request."
+
+      - name: Validate the SSE endpoint (through the reverse proxy)
+        run: |
+          frame=$(timeout 15 curl -N -sS -X POST http://localhost:8080/api/v1/query/stream \
+            -H "Content-Type: application/json" \
+            -d '{"question": "How many rows are in the customers table?"}' | head -n 5)
+          echo "$frame"
+          echo "$frame" | grep -q "^event: pipeline_started" || { echo "::error::No pipeline_started SSE frame received"; exit 1; }
+
+      - name: Validate the WebSocket endpoint (through the reverse proxy)
+        run: |
+          uv run python -c "
+          import asyncio, json, sys, websockets
+
+          async def main() -> None:
+              async with websockets.connect('ws://localhost:8080/ws/query') as ws:
+                  await ws.send(json.dumps({'question': 'How many rows are in the customers table?'}))
+                  first = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+                  if first['event_type'] != 'pipeline_started':
+                      print(f'::error::Expected pipeline_started, got {first[\"event_type\"]}')
+                      sys.exit(1)
+                  print('WebSocket proxy confirmed: received', first['event_type'])
+
+          asyncio.run(main())
+          "
+
+      - name: Collect Compose logs
+        if: failure()
+        run: docker compose logs --no-color > compose-logs.txt
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-logs
+          path: compose-logs.txt
+          retention-days: 7
+
+      - name: Tear down (including the Postgres volume -- this run's data is disposable)
+        if: always()
+        run: docker compose down -v

@@ -1,0 +1,116 @@
+name: Release
+
+# Builds both production images, archives them (plus the frontend's static build) as
+# downloadable artifacts, and prepares a **draft** GitHub Release -- never auto-published, per
+# this phase's scope: a maintainer reviews and publishes it by hand. No container registry push
+# happens here (no registry is set up yet -- see docs/ci-cd.md's "Not implemented yet" note).
+#
+# Gated on backend.yml and frontend.yml's own jobs passing first, via `uses:` (a reusable
+# workflow call) rather than re-implementing lint/typecheck/test here.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version label for a manual/dry-run release (e.g. v1.2.0-rc1)"
+        required: true
+        default: "v0.0.0-dev"
+
+jobs:
+  backend-ci:
+    name: Backend CI (gate)
+    uses: ./.github/workflows/backend.yml
+
+  frontend-ci:
+    name: Frontend CI (gate)
+    uses: ./.github/workflows/frontend.yml
+
+  build-and-archive:
+    name: Build + archive release artifacts
+    needs: [backend-ci, frontend-ci]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.backend
+          push: false
+          load: true # into the local Docker daemon, so `docker save` below can archive it
+          tags: querymind-backend:${{ steps.version.outputs.value }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: false
+          load: true
+          tags: querymind-frontend:${{ steps.version.outputs.value }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Archive both images
+        run: |
+          mkdir -p release-assets
+          docker save "querymind-backend:${{ steps.version.outputs.value }}" | gzip > "release-assets/querymind-backend-${{ steps.version.outputs.value }}.tar.gz"
+          docker save "querymind-frontend:${{ steps.version.outputs.value }}" | gzip > "release-assets/querymind-frontend-${{ steps.version.outputs.value }}.tar.gz"
+
+      - name: Download the frontend's static build (from frontend-ci, no rebuild)
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend-dist
+
+      - name: Archive the static build
+        run: |
+          cd frontend-dist
+          zip -r "../release-assets/querymind-frontend-dist-${{ steps.version.outputs.value }}.zip" .
+
+      - name: Upload release assets (workflow artifact)
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets-${{ steps.version.outputs.value }}
+          path: release-assets
+          retention-days: 30
+
+  draft-release:
+    name: Prepare draft GitHub Release
+    needs: build-and-archive
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets-${{ needs.build-and-archive.outputs.version }}
+          path: release-assets
+
+      - name: Create draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.build-and-archive.outputs.version }}
+          draft: true # never auto-published -- a maintainer reviews and publishes by hand
+          generate_release_notes: true
+          files: release-assets/*

@@ -1,0 +1,73 @@
+name: Frontend CI
+
+# Fast CI, tier 1 of 2 (see docs/ci-cd.md): lint, type-check, test, and build the frontend on
+# every push and PR. Also `workflow_call`-able so release.yml can gate a release on this exact
+# same job without copy-pasting it.
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+concurrency:
+  group: frontend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: frontend
+
+jobs:
+  lint-typecheck-test-build:
+    name: oxlint, tsc, Vitest, Vite build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install (lockfile-exact)
+        run: npm ci
+
+      - name: Lint (oxlint)
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Vitest
+        run: npm run test
+
+      - name: Production build
+        run: npm run build
+
+      # Lets release.yml (which `uses:` this workflow) archive the exact same build as a
+      # release asset without rebuilding it -- any job in the same workflow run can download
+      # an artifact uploaded by another job.
+      - name: Upload dist/ as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
+          retention-days: 7
+
+  docker-build:
+    name: Build frontend Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (not pushed -- validates frontend/Dockerfile only)
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: false
+          tags: querymind-frontend:ci
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend

@@ -1,0 +1,96 @@
+name: Backend CI
+
+# Fast CI, tier 1 of 2 (see docs/ci-cd.md): lint, type-check, and unit-test the backend on every
+# push and PR. Never starts PostgreSQL and never runs the tests/**/test_integration.py suite
+# (or the handful of individually DB-dependent tests scattered in otherwise-hermetic files,
+# explicitly --deselected below) -- that's integration.yml's job, on its own, much slower,
+# much less frequent trigger. Also `workflow_call`-able so release.yml can gate a release on
+# this exact same job without copy-pasting it.
+
+on:
+  push:
+  pull_request:
+  workflow_call:
+
+# A newer push on the same branch/PR cancels an older, still-running one -- avoids burning
+# runner time on a commit that's already been superseded.
+concurrency:
+  group: backend-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-typecheck-test:
+    name: Ruff, MyPy, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          # Cache is keyed on uv.lock's hash by default -- invalidates only when dependencies
+          # actually change, not on every source edit.
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python (pyproject's requires-python)
+        run: uv python install 3.12
+
+      - name: Install project (incl. dev dependencies)
+        run: uv sync --frozen
+
+      - name: Ruff (lint)
+        run: uv run ruff check .
+
+      - name: Ruff (format check)
+        run: uv run ruff format --check .
+
+      - name: MyPy
+        run: uv run mypy src
+
+      - name: Backend unit tests (PostgreSQL-dependent tests excluded)
+        # Two exclusion layers, both established by inspecting which tests actually fail
+        # without a reachable database (verified locally: 33 tests, 0 source changes made to
+        # separate them -- no pytest markers exist in this codebase and adding any would be a
+        # test-source change, out of scope for a CI-only phase):
+        #   1. --ignore-glob drops every tests/**/test_integration.py file outright -- each one
+        #      is, by this codebase's own naming convention and docstrings, entirely dedicated
+        #      to real-Postgres end-to-end testing (22 of the 33 tests).
+        #   2. The remaining 11 are individual DB-touching tests living inside otherwise-hermetic
+        #      files (test_execution.py, test_diagnostics.py, test_health.py, test_connection.py,
+        #      test_executor.py) alongside mocked unit tests in the same file -- --deselect
+        #      removes exactly those, by node ID, leaving every mocked test in those same files
+        #      running here as normal.
+        # All 33 run for real in integration.yml, against a real, Compose-provisioned Postgres.
+        run: |
+          uv run pytest -q --no-cov \
+            --ignore-glob='tests/**/test_integration.py' \
+            --deselect tests/api/test_execution.py::test_executes_read_only_sql_against_the_real_database \
+            --deselect 'tests/observability/test_diagnostics.py::TestDatabaseConnectivityCheck::test_a_real_reachable_database_passes' \
+            --deselect 'tests/observability/test_health.py::TestDatabaseReachable::test_a_real_reachable_database_is_healthy' \
+            --deselect 'tests/observability/test_health.py::TestOverallStatus::test_overall_is_healthy_only_if_every_check_is_healthy' \
+            --deselect 'tests/sql_execution/test_connection.py::TestAcquire::test_yields_a_working_connection' \
+            --deselect 'tests/sql_execution/test_connection.py::TestAcquire::test_connection_is_read_only' \
+            --deselect 'tests/sql_execution/test_connection.py::TestAcquire::test_caller_exceptions_are_not_reclassified_as_connection_errors' \
+            --deselect 'tests/sql_execution/test_executor.py::TestExecute::test_a_real_select_returns_column_names_and_rows' \
+            --deselect 'tests/sql_execution/test_executor.py::TestExecute::test_a_query_with_no_rows_still_reports_columns' \
+            --deselect 'tests/sql_execution/test_executor.py::TestExecute::test_exceeding_the_timeout_raises_execution_timeout_error' \
+            --deselect 'tests/sql_execution/test_executor.py::TestExecute::test_a_database_error_raises_execution_failure_error'
+
+  docker-build:
+    name: Build backend Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build (not pushed -- validates Dockerfile.backend only)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.backend
+          push: false
+          tags: querymind-backend:ci
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend

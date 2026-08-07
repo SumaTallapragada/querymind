@@ -1,0 +1,74 @@
+name: Docker
+
+# Fast CI, tier 1 of 2 (see docs/ci-cd.md): a single, dedicated status check that both images
+# build and that docker-compose.yml itself is well-formed -- deliberately separate from
+# backend.yml/frontend.yml (which each also build their own image) so there's one specific
+# check to point branch protection at for "the Docker infra is intact," independent of which
+# language changed. Builds here share a Buildx cache scope with backend.yml/frontend.yml's own
+# image builds, so the duplication costs little.
+#
+# Never runs `docker compose up`, and starts no containers -- config validation only. Real,
+# running-container verification (health, networking, REST/SSE/WebSocket) is integration.yml's
+# job, on its own trigger.
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: docker-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-images:
+    name: Build backend + frontend images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.backend
+          push: false
+          tags: querymind-backend:ci
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          push: false
+          tags: querymind-frontend:ci
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+  compose-config:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # docker-compose.yml interpolates ${POSTGRES_USER}/${POSTGRES_PASSWORD}/${POSTGRES_DB}
+      # (no defaults for those three -- see docker-compose.yml's own comments on why) --
+      # `docker compose config` needs *something* to substitute even just to parse and render
+      # the file. These are placeholder values for syntax validation only, never used to start
+      # a real container in this workflow -- not secrets, safe to commit in plain text.
+      - name: Write a placeholder .env for variable interpolation
+        run: |
+          cat <<'EOF' > .env
+          POSTGRES_USER=ci-placeholder
+          POSTGRES_PASSWORD=ci-placeholder
+          POSTGRES_DB=ci-placeholder
+          POSTGRES_PORT=5432
+          APP_PORT=8000
+          FRONTEND_PORT=8080
+          LLM_API_KEY=
+          EOF
+
+      - name: Validate docker-compose.yml
+        run: docker compose config --quiet
