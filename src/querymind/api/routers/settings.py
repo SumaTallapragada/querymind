@@ -3,6 +3,11 @@ page. The one route in this package backed by `Settings` directly rather than an
 there is no pipeline behavior to reuse here, only values already sitting on the one `Settings`
 instance the whole process was built from. Never returns a secret: no password, API key, or
 connection string, only a database *name* and an LLM *provider*/*model* pair.
+
+Requires `ADMIN` (Phase 22B) -- deployment/environment configuration, even the non-secret parts
+of it, is an operator concern. The Phase 18 frontend has no login UI yet, so this is a known,
+intentional consequence for its Settings page until one exists (documented in the Phase 22B
+deliverable report, alongside the same tradeoff for the query/streaming endpoints).
 """
 
 from __future__ import annotations
@@ -11,7 +16,7 @@ from importlib.metadata import version as package_version
 
 from fastapi import APIRouter, status
 
-from querymind.api.dependencies import SettingsDep
+from querymind.api.dependencies import RequireAdmin, SettingsDep
 from querymind.api.models.response import SettingsResponse
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -25,10 +30,10 @@ router = APIRouter(prefix="/settings", tags=["settings"])
     description=(
         "Application name, version, environment, database engine/name, LLM provider/model, and "
         "which streaming transports this backend serves. Never includes a password, API key, or "
-        "connection string."
+        "connection string. Requires the `admin` role."
     ),
 )
-async def get_settings_info(settings: SettingsDep) -> SettingsResponse:
+async def get_settings_info(settings: SettingsDep, _admin: RequireAdmin) -> SettingsResponse:
     llm_provider_config = settings.llm_provider_config
     return SettingsResponse(
         app_name=settings.app_name,

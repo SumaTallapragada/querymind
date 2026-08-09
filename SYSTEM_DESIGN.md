@@ -236,6 +236,19 @@ place the two layers meet at all is `GET /api/v1/auth/me`, which returns a `User
 same way every other route returns its own model: constructed by the engine (here,
 `AuthenticationService`) that owns it, serialized as-is.
 
+## How authorization relates to these models (Phase 22B)
+
+The same answer as Phase 22A, one layer further: it doesn't. `querymind.auth.models.UserRole`
+and the four authorization methods on `AuthenticationService` (`has_role`, `is_admin`,
+`require_role`, `require_any_role`) never touch `QueryContext -> ... -> QueryMindResponse`
+either — a role is a property of the *caller*, checked once, before a route's handler body (and
+therefore the pipeline) ever runs; nothing about a request's `role` is threaded through any
+pipeline model, and a role is never present in a JWT claim (see
+[`ARCHITECTURE.md` §20](ARCHITECTURE.md#20-authorization-phase-22b) for why: it's read fresh
+from the database on every request instead). The only place authorization is visible in a
+response body at all is `GET /api/v1/auth/me`'s `UserRead.role` field — the same `UserRead`
+Phase 22A already returned, with one more field on it.
+
 ## Why each phase exists
 
 **NLU exists** because turning free text into structured intent (what kind

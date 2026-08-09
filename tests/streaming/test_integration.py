@@ -10,21 +10,58 @@ proven to validate/fail against the real schema) one transport layer up:
 these tests exist to prove the *streaming* of a real run works, not to
 re-prove the pipeline itself, which `tests/orchestrator/test_integration.py`
 and `tests/api/test_integration.py` already cover.
+
+`TestSseIntegration` goes through `integration_client`, which already authenticates as `ADMIN`
+(Phase 22B; see `tests/api/conftest.py`). `TestWebSocketIntegration` can't reuse that helper --
+`/ws/query` bypasses `Depends(get_current_user)` entirely (see
+`querymind.streaming.websocket`'s docstring) -- so it registers and logs in a real user over
+real HTTP first, the same way `tests/api/test_auth_integration.py` does, and passes the real
+access token to `websocket_connect`. `_cleanup_auth_tables` below mirrors that file's
+`_clean_auth_tables` fixture, but runs on `client.portal` (`TestClient`'s own background event
+loop, reusing the already-open `app.state.session_factory`/`container.engine`) while the
+`TestClient` is still open, rather than a second `asyncio.run`/`create_engine` after it closes
+-- opening a second, independent connection pool just for cleanup left an unclosed socket and
+event loop for the garbage collector to find at a nondeterministic point in a *later* test,
+which `filterwarnings = ["error"]` (`pyproject.toml`) turns into a spurious failure there.
 """
 
 from __future__ import annotations
 
 import json
+import uuid
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import delete, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from starlette.websockets import WebSocketDisconnect
 
 from querymind.api.app import create_app
+from querymind.auth.models import RefreshToken, User, UserRole
 from querymind.core.config import Settings
 from querymind.llm.client import HttpxTransport
 from tests.api.conftest import integration_client, sql_handler
 
 _QUESTION = "Who are our top 10 customers by revenue?"
+
+
+async def _cleanup_auth_tables(session_factory: async_sessionmaker[AsyncSession]) -> None:
+    async with session_factory() as session:
+        await session.execute(delete(RefreshToken))
+        await session.execute(delete(User))
+        await session.commit()
+
+
+async def _downgrade_to_viewer(
+    session_factory: async_sessionmaker[AsyncSession], username: str
+) -> None:
+    async with session_factory() as session:
+        await session.execute(
+            update(User).where(User.username == username).values(role=UserRole.VIEWER)
+        )
+        await session.commit()
+
 
 _VALID_SQL = (
     "SELECT c.customer_id, SUM(o.total_amount) AS total_revenue "
@@ -99,15 +136,90 @@ class TestWebSocketIntegration:
         transport = HttpxTransport(httpx.Client(transport=httpx.MockTransport(handler)))
         app = create_app(settings=real_settings, llm_transport=transport)
 
-        with TestClient(app) as client, client.websocket_connect("/ws/query") as ws:
-            ws.send_json({"question": _QUESTION})
-            message = ws.receive_json()
-            event_types = [message["event_type"]]
-            while message["event_type"] != "pipeline_completed":
-                message = ws.receive_json()
-                event_types.append(message["event_type"])
+        with TestClient(app) as client:
+            try:
+                # A real registered user (default role `ANALYST`, per the Phase 22B
+                # migration's `server_default`) -- `/ws/query` checks a real token against
+                # the real database, unlike `tests/streaming/test_websocket.py`'s unit tests.
+                username = f"ws_integration_{uuid.uuid4().hex[:8]}"
+                register = client.post(
+                    "/api/v1/auth/register",
+                    json={
+                        "username": username,
+                        "email": f"{username}@example.com",
+                        "password": "password123",
+                    },
+                )
+                assert register.status_code == 201, register.text
+                login = client.post(
+                    "/api/v1/auth/login", json={"username": username, "password": "password123"}
+                )
+                assert login.status_code == 200, login.text
+                access_token = login.json()["access_token"]
+
+                with client.websocket_connect(
+                    "/ws/query", headers={"Authorization": f"Bearer {access_token}"}
+                ) as ws:
+                    ws.send_json({"question": _QUESTION})
+                    message = ws.receive_json()
+                    event_types = [message["event_type"]]
+                    while message["event_type"] != "pipeline_completed":
+                        message = ws.receive_json()
+                        event_types.append(message["event_type"])
+            finally:
+                client.portal.call(_cleanup_auth_tables, app.state.session_factory)
 
         assert event_types[0] == "pipeline_started"
         assert event_types[-1] == "pipeline_completed"
         assert message["payload"]["status"] == "success"
         assert message["payload"]["business_answer"] is not None
+
+    def test_rejects_a_connection_with_no_token(self, real_settings: Settings) -> None:
+        app = create_app(settings=real_settings)
+
+        with (
+            TestClient(app) as client,
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/ws/query") as ws,
+        ):
+            ws.receive_json()
+
+        assert exc_info.value.code == 1008
+
+    def test_rejects_a_connection_for_a_role_below_analyst(self, real_settings: Settings) -> None:
+        app = create_app(settings=real_settings)
+
+        with TestClient(app) as client:
+            try:
+                # A real registered user, downgraded to `VIEWER` -- there is no HTTP endpoint
+                # for this (see `test_auth_integration.py::_promote_to_admin`'s own docstring
+                # for why); the direct database write is the only way to produce one.
+                username = f"ws_forbidden_{uuid.uuid4().hex[:8]}"
+                register = client.post(
+                    "/api/v1/auth/register",
+                    json={
+                        "username": username,
+                        "email": f"{username}@example.com",
+                        "password": "password123",
+                    },
+                )
+                assert register.status_code == 201, register.text
+                login = client.post(
+                    "/api/v1/auth/login", json={"username": username, "password": "password123"}
+                )
+                assert login.status_code == 200, login.text
+                access_token = login.json()["access_token"]
+
+                client.portal.call(_downgrade_to_viewer, app.state.session_factory, username)
+
+                with (
+                    pytest.raises(WebSocketDisconnect) as exc_info,
+                    client.websocket_connect(
+                        "/ws/query", headers={"Authorization": f"Bearer {access_token}"}
+                    ) as ws,
+                ):
+                    ws.receive_json()
+
+                assert exc_info.value.code == 1008
+            finally:
+                client.portal.call(_cleanup_auth_tables, app.state.session_factory)

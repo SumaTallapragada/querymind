@@ -1,12 +1,28 @@
+"""`GET /api/v1/health/live` needs no authentication (Phase 22B leaves it, and
+`/api/v1/health/ready`, deliberately public -- see `querymind.api.v1.endpoints.health`'s
+docstring: Docker/Compose's own `HEALTHCHECK` calls it with no credentials). The full report,
+`GET /api/v1/health` below, requires only that the caller is authenticated (any role) --
+`_authenticated` overrides `get_current_user` for every test in this file with a `VIEWER`, the
+lowest rank, to demonstrate that no *specific* role is required, only login.
+"""
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from querymind.api.dependencies import get_health_check_engine
+from querymind.api.dependencies import get_current_user, get_health_check_engine
+from querymind.auth.models import UserRole
 from querymind.observability.models import HealthCheck, HealthReport, HealthStatus
+from tests.api.conftest import make_user_read
+
+
+@pytest.fixture(autouse=True)
+def _authenticated(app: FastAPI) -> None:
+    app.dependency_overrides[get_current_user] = lambda: make_user_read(role=UserRole.VIEWER)
 
 
 async def test_liveness_returns_ok(client: AsyncClient) -> None:

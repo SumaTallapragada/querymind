@@ -20,17 +20,38 @@ Reuses `querymind.models.mixins`' `TimestampMixin`/`CreatedAtMixin`/`SoftDeleteM
 do without pulling in `Base` itself, since those mixins are plain column-contributing classes
 with no metadata/registry of their own (verified: `querymind/models/mixins.py` has no import of
 `querymind.models.base`).
+
+`UserRole` (Phase 22B) is mapped the same way `querymind.models.customer.CustomerSegment` maps
+its own enum -- `native_enum=False` (a `VARCHAR` + `CHECK` constraint, not a real Postgres
+`ENUM` type, so adding a fourth role later is a plain, no-downtime column-constraint migration,
+never an `ALTER TYPE`).
 """
 
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 
 from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Identity, MetaData, String
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from querymind.db.base import NAMING_CONVENTION
 from querymind.models.mixins import CreatedAtMixin, SoftDeleteMixin, TimestampMixin
+
+
+class UserRole(str, Enum):
+    """The three roles this phase supports, ranked `ADMIN` > `ANALYST` > `VIEWER` -- see
+    `AuthenticationService.require_role`'s own docstring for what "ranked" means for
+    authorization (a higher role satisfies a lower requirement). Not a permissions/ABAC system:
+    exactly these three values, checked by membership/rank, never stored anywhere but this one
+    column (never in a JWT claim -- a role change takes effect on a caller's very next request,
+    not only after their current tokens expire).
+    """
+
+    ADMIN = "admin"
+    ANALYST = "analyst"
+    VIEWER = "viewer"
 
 
 class AuthBase(DeclarativeBase):
@@ -55,6 +76,18 @@ class User(TimestampMixin, SoftDeleteMixin, AuthBase):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_superuser: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    role: Mapped[UserRole] = mapped_column(
+        SAEnum(
+            UserRole,
+            name="user_role_valid_values",
+            native_enum=False,
+            create_constraint=True,
+            length=20,
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+        server_default=UserRole.ANALYST.value,
+    )
 
     refresh_tokens: Mapped[list[RefreshToken]] = relationship(
         back_populates="user", cascade="all, delete-orphan"

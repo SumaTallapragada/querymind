@@ -2,17 +2,24 @@
 verifies the route accepts a bare `SQLExecutionResult` as the whole request body (no wrapper
 DTO), passes it through to `ResultFormatterEngine.format` unchanged, and maps a
 `FormattingError` (raised for a non-`SUCCESS` execution result) to `422`.
+
+Requires at least `ANALYST` (Phase 22B) -- `_authenticated_as_analyst` below overrides
+`get_current_user` for every test in this file; see `test_diagnostics.py`'s identical fixture
+for why.
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from querymind.api.dependencies import get_result_formatter_engine
+from querymind.api.dependencies import get_current_user, get_result_formatter_engine
+from querymind.auth.models import UserRole
 from querymind.result_formatter import FormattingError
 from querymind.result_formatter.models import BusinessAnswer
 from querymind.sql_execution.models import SQLExecutionResult
+from tests.api.conftest import make_user_read
 from tests.orchestrator.conftest import (
     make_business_answer,
     make_execution_result,
@@ -20,6 +27,11 @@ from tests.orchestrator.conftest import (
 )
 
 _SQL = "SELECT customer_id FROM customers LIMIT 5;"
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_as_analyst(app: FastAPI) -> None:
+    app.dependency_overrides[get_current_user] = lambda: make_user_read(role=UserRole.ANALYST)
 
 
 class _FakeFormatterEngine:

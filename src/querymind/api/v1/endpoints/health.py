@@ -10,6 +10,13 @@ are consumed by different parts of a container orchestrator:
   it. Coupling liveness to the database would cause a healthy process to
   be killed and restarted during a transient database blip, which does
   nothing to fix the outage and adds churn on top of it.
+
+Deliberately left unauthenticated (Phase 22B did not add `CurrentUser`/`RequireAdmin` here,
+unlike ``GET /health``/``/health/diagnostics``/``/health/metrics``): these two are infrastructure
+probes, not human/application endpoints -- ``docker-compose.yml``'s own ``HEALTHCHECK`` calls
+``/health/live`` with no credentials at all (see ``Dockerfile.backend``), and requiring
+authentication here would break container orchestration itself. Both report nothing more
+sensitive than "the process is up"/"the database is reachable" either way.
 """
 
 from __future__ import annotations

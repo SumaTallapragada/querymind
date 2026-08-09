@@ -12,11 +12,11 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import delete
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import delete, text
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from querymind.auth.models import RefreshToken, User
+from querymind.auth.models import RefreshToken, User, UserRole
 from querymind.auth.repository import AuthenticationRepository
 
 
@@ -82,6 +82,17 @@ class TestCreateUser:
         assert user.created_at is not None
         assert user.updated_at is not None
 
+    async def test_defaults_role_to_analyst(self, repository: AuthenticationRepository) -> None:
+        """Proves the real database applies `role`'s `server_default` -- `AuthenticationRepository.
+        create_user` (deliberately, per Phase 22B's "no self-elevation" constraint) has no `role`
+        parameter at all, so this is the only outcome a caller can ever get.
+        """
+        user = await repository.create_user(
+            username="role_default", email="role_default@example.com", password_hash="hash"
+        )
+
+        assert user.role is UserRole.ANALYST
+
     async def test_duplicate_username_raises_integrity_error(
         self, repository: AuthenticationRepository
     ) -> None:
@@ -105,6 +116,34 @@ class TestCreateUser:
             await repository.create_user(
                 username="erin2", email="erin@example.com", password_hash="hash"
             )
+
+
+class TestRoleCheckConstraint:
+    """Proves the real `CHECK` constraint (`ck_users_user_role_valid_values`, from
+    `alembic/versions/f76b40117bc0_add_role_column_to_users.py`) itself rejects an invalid
+    value -- via a raw `INSERT`, not `AuthenticationRepository`/the ORM, since SQLAlchemy's own
+    `Enum` type would reject an invalid `UserRole` before a query is ever sent, which would
+    prove Python-side validation works, not that the database's own constraint does.
+    """
+
+    async def test_rejects_a_role_value_outside_the_three_allowed_ones(
+        self, session_factory: async_sessionmaker[AsyncSession]
+    ) -> None:
+        async with session_factory() as session:
+            with pytest.raises(DBAPIError):
+                await session.execute(
+                    text(
+                        "INSERT INTO users (username, email, password_hash, role) "
+                        "VALUES (:username, :email, :password_hash, :role)"
+                    ),
+                    {
+                        "username": "role_constraint_test",
+                        "email": "role_constraint_test@example.com",
+                        "password_hash": "hash",
+                        "role": "superadmin",
+                    },
+                )
+            await session.rollback()
 
 
 class TestGetByUsername:

@@ -1,17 +1,29 @@
 """Unit tests for `GET /api/v1/health/diagnostics`. `DiagnosticsEngineDep` is mocked --
 verifies the route returns `DiagnosticsEngine.run`'s report unchanged, and maps `503` only
 when `overall_status` is `ERROR` (a `WARNING` overall status still returns `200`).
+
+Requires `ADMIN` (Phase 22B) -- `_authenticated_as_admin` below overrides `get_current_user`
+for every test in this file so these tests keep exercising the route's own behavior rather
+than re-proving authorization (covered separately).
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from querymind.api.dependencies import get_diagnostics_engine
+from querymind.api.dependencies import get_current_user, get_diagnostics_engine
+from querymind.auth.models import UserRole
 from querymind.observability.models import DiagnosticFinding, DiagnosticsReport, DiagnosticStatus
+from tests.api.conftest import make_user_read
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_as_admin(app: FastAPI) -> None:
+    app.dependency_overrides[get_current_user] = lambda: make_user_read(role=UserRole.ADMIN)
 
 
 class _FakeDiagnosticsEngine:

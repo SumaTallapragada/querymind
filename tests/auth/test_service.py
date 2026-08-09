@@ -17,14 +17,16 @@ from sqlalchemy.exc import IntegrityError
 
 from querymind.auth.exceptions import (
     DuplicateUserError,
+    ForbiddenRoleError,
     InactiveUserError,
+    InsufficientPermissionsError,
     InvalidCredentialsError,
     InvalidTokenError,
     RefreshTokenRevokedError,
     TokenExpiredError,
 )
 from querymind.auth.jwt import create_access_token, decode_token
-from querymind.auth.models import RefreshToken, User
+from querymind.auth.models import RefreshToken, User, UserRole
 from querymind.auth.service import AuthenticationService
 from tests.auth.conftest import TEST_JWT_SECRET_KEY
 
@@ -51,6 +53,7 @@ class _FakeAuthenticationRepository:
         )
         user.id = self._next_user_id
         user.is_active = True
+        user.role = UserRole.ANALYST
         user.created_at = datetime.now(UTC)
         user.updated_at = datetime.now(UTC)
         self._next_user_id += 1
@@ -466,3 +469,130 @@ class TestGetCurrentUser:
         resolved = await service.get_current_user(tokens.access_token)
 
         assert not hasattr(resolved, "password_hash")
+
+
+# -- Authorization (Phase 22B) -------------------------------------------------------------
+#
+# `has_role`/`is_admin`/`require_role`/`require_any_role` are pure functions of an already-
+# resolved `UserRead` -- no repository call, no I/O -- so these tests exercise them directly
+# against `UserRead.model_copy(update={"role": ...})` variants of a single registered user,
+# rather than registering a fresh user per role the way `TestRegisterUser`/`TestAuthenticate`
+# above need to (those methods' behavior genuinely depends on what's in the repository; these
+# don't).
+
+
+class TestHasRole:
+    async def test_true_for_an_exact_match(self, service: AuthenticationService) -> None:
+        user = (
+            await service.register_user(
+                username="role_alice", email="role_alice@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.ANALYST})
+
+        assert service.has_role(user, UserRole.ANALYST) is True
+
+    async def test_false_for_a_higher_ranked_role(self, service: AuthenticationService) -> None:
+        """Not hierarchical -- an `ADMIN` does not `has_role(..., VIEWER)`, unlike `require_role`."""
+        user = (
+            await service.register_user(
+                username="role_bob", email="role_bob@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.ADMIN})
+
+        assert service.has_role(user, UserRole.VIEWER) is False
+
+
+class TestIsAdmin:
+    async def test_true_for_an_admin(self, service: AuthenticationService) -> None:
+        user = (
+            await service.register_user(
+                username="role_carol", email="role_carol@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.ADMIN})
+
+        assert service.is_admin(user) is True
+
+    async def test_false_for_a_non_admin(self, service: AuthenticationService) -> None:
+        user = (
+            await service.register_user(
+                username="role_dave", email="role_dave@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.ANALYST})
+
+        assert service.is_admin(user) is False
+
+
+class TestRequireRole:
+    async def test_an_exact_match_passes(self, service: AuthenticationService) -> None:
+        user = (
+            await service.register_user(
+                username="role_erin", email="role_erin@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.ANALYST})
+
+        service.require_role(user, UserRole.ANALYST)  # does not raise
+
+    async def test_a_higher_ranked_role_satisfies_a_lower_minimum(
+        self, service: AuthenticationService
+    ) -> None:
+        """`ADMIN` (rank 3) satisfies a `minimum_role` of `ANALYST` (rank 2) -- the ranked
+        behavior `RequireAnalyst`/`RequireViewer` (`querymind.api.dependencies`) rely on to let
+        an `ADMIN` reach an `ANALYST`-gated route.
+        """
+        user = (
+            await service.register_user(
+                username="role_frank", email="role_frank@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.ADMIN})
+
+        service.require_role(user, UserRole.ANALYST)  # does not raise
+
+    async def test_a_lower_ranked_role_raises_forbidden_role_error(
+        self, service: AuthenticationService
+    ) -> None:
+        user = (
+            await service.register_user(
+                username="role_gina", email="role_gina@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.VIEWER})
+
+        with pytest.raises(ForbiddenRoleError):
+            service.require_role(user, UserRole.ADMIN)
+
+
+class TestRequireAnyRole:
+    async def test_a_role_in_the_set_passes(self, service: AuthenticationService) -> None:
+        user = (
+            await service.register_user(
+                username="role_hank", email="role_hank@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.VIEWER})
+
+        service.require_any_role(user, UserRole.ADMIN, UserRole.VIEWER)  # does not raise
+
+    async def test_not_hierarchical_a_higher_rank_outside_the_set_still_fails(
+        self, service: AuthenticationService
+    ) -> None:
+        """Unlike `require_role`, `require_any_role` is exact-set membership -- an `ADMIN` does
+        not automatically satisfy `require_any_role(user, VIEWER)`.
+        """
+        user = (
+            await service.register_user(
+                username="role_ivy", email="role_ivy@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.ADMIN})
+
+        with pytest.raises(InsufficientPermissionsError):
+            service.require_any_role(user, UserRole.VIEWER)
+
+    async def test_a_role_outside_the_set_raises_insufficient_permissions_error(
+        self, service: AuthenticationService
+    ) -> None:
+        user = (
+            await service.register_user(
+                username="role_jack", email="role_jack@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.ANALYST})
+
+        with pytest.raises(InsufficientPermissionsError):
+            service.require_any_role(user, UserRole.ADMIN, UserRole.VIEWER)

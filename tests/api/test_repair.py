@@ -2,16 +2,23 @@
 route passes both the question and the validation result through to
 `QueryMindEngine.repair` unchanged, and returns whatever `SQLRepairResult` it produces
 regardless of whether repair actually succeeded.
+
+Requires at least `ANALYST` (Phase 22B) -- `_authenticated_as_analyst` below overrides
+`get_current_user` for every test in this file; see `test_diagnostics.py`'s identical fixture
+for why.
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from querymind.api.dependencies import get_query_mind_engine
+from querymind.api.dependencies import get_current_user, get_query_mind_engine
+from querymind.auth.models import UserRole
 from querymind.sql_repair.models import RepairStatus, SQLRepairResult
 from querymind.sql_validation.models import SQLValidationResult
+from tests.api.conftest import make_user_read
 from tests.orchestrator.conftest import (
     make_generated_sql,
     make_issue,
@@ -21,6 +28,11 @@ from tests.orchestrator.conftest import (
 
 _QUESTION = "Who are our top 5 customers by revenue?"
 _BROKEN_SQL = "SELECT c.customer_id FROM customers c JOIN nonexistent n ON n.id = c.customer_id;"
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_as_analyst(app: FastAPI) -> None:
+    app.dependency_overrides[get_current_user] = lambda: make_user_read(role=UserRole.ANALYST)
 
 
 class _FakeEngine:

@@ -198,9 +198,9 @@ Phase 22A adds user accounts and JWT-based sessions, in two additive parts: Part
 `querymind.auth` as a self-contained library (user accounts, Argon2 password hashing, JWT
 access/refresh tokens) with no FastAPI dependency at all; Part 2 wired it into the same HTTP API
 described above, following the exact same "thin route, one engine call" pattern every other
-endpoint already uses. **No existing endpoint requires authentication yet** — `/auth/*` is
-purely additive, and there is no authorization/RBAC layer yet (see
-[Project roadmap](#project-roadmap)).
+endpoint already uses. Phase 22B then adds role-based authorization on top — see
+[Authorization](#authorization) below for which routes now actually require a caller's
+identity, and which role.
 
 | Method | Path | Calls | Returns |
 |---|---|---|---|
@@ -233,7 +233,7 @@ curl -X POST http://localhost:8000/api/v1/auth/login \
 
 curl http://localhost:8000/api/v1/auth/me \
   -H "Authorization: Bearer eyJ..."
-# {"id": 1, "username": "alice", "email": "alice@example.com", "is_active": true, "is_superuser": false, ...}
+# {"id": 1, "username": "alice", "email": "alice@example.com", "is_active": true, "is_superuser": false, "role": "analyst", ...}
 ```
 
 Configure `JWT_SECRET_KEY` (required for production — the default is a clearly-labeled,
@@ -241,6 +241,36 @@ insecure placeholder), `JWT_ALGORITHM` (default `HS256`), `ACCESS_TOKEN_EXPIRE_M
 (default `30`), and `REFRESH_TOKEN_EXPIRE_DAYS` (default `14`) via `.env` — see
 `.env.example`. See [`ARCHITECTURE.md` §19](ARCHITECTURE.md#19-authentication-phase-22a) for
 how the library and the API layer are wired.
+
+## Authorization
+
+Phase 22B adds role-based authorization on top of the accounts/sessions above — purely
+additive, no change to login, tokens, or any existing `AuthenticationService` method. Three
+ranked roles (`ADMIN` > `ANALYST` > `VIEWER`, `querymind.auth.models.UserRole`); a new account
+defaults to `ANALYST` and there is no way to self-elevate — only a direct database write can
+produce an `ADMIN`.
+
+Every route below now requires the caller's identity (`Authorization: Bearer <access_token>`),
+not just `GET /auth/me`:
+
+| Route(s) | Requirement |
+|---|---|
+| `GET /auth/me` | Authenticated (any role) |
+| `GET /health/diagnostics`, `GET /health/metrics`, `GET /settings` | `ADMIN` |
+| `POST /query`, `/query/sql`, `/query/validate`, `/query/repair`, `/query/execute`, `/query/format`, `/query/stream`, `/ws/query` | `ANALYST` (an `ADMIN` satisfies this too) |
+| `GET /health` (the full report) | Authenticated (any role) |
+| `GET /health/live`, `GET /health/ready` | Unauthenticated — Docker/Compose's own `HEALTHCHECK` depends on this |
+
+A missing/invalid token is `401`; a valid token for the wrong role is `403`
+(`{"detail": "...", "error_type": "ForbiddenRoleError"}` or `"InsufficientPermissionsError"`,
+the same `{"detail", "error_type"}` shape every other error already uses). `/ws/query` enforces
+the same `ANALYST` requirement, checked before the WebSocket handshake completes, via the
+`Authorization` header or a `?token=` query parameter (a browser's native `WebSocket` API cannot
+set custom headers at all).
+
+See [`ARCHITECTURE.md` §20](ARCHITECTURE.md#20-authorization-phase-22b) for the full design,
+including why a role is never stored in the JWT and why `/health/live`/`/health/ready` stay
+unauthenticated.
 
 ## Streaming (SSE & WebSockets)
 
@@ -545,17 +575,22 @@ text-to-SQL pipeline described above ending at an immutable
 16 adds the FastAPI service layer described in [HTTP API](#http-api);
 Phase 17 adds the real-time streaming described in
 [Streaming](#streaming-sse--websockets); Phase 22A adds user accounts and
-JWT authentication, described in [Authentication](#authentication).
+JWT authentication, described in [Authentication](#authentication); Phase
+22B adds role-based authorization on top, described in
+[Authorization](#authorization).
 
 Not yet implemented — explicitly deferred, phase by phase, throughout this
 project's history (see [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md)
 for the complete, current list):
 
 - CLI for interactive question-asking.
-- Authorization/RBAC, API keys, OAuth/SSO — Phase 22A adds authentication
-  (who a caller is) only; no existing endpoint requires it yet, and
-  nothing yet governs what an authenticated caller may do.
-- A frontend (React or otherwise).
+- API keys, OAuth/SSO, multi-tenancy, per-resource permissions (ABAC) —
+  Phase 22B adds exactly three ranked roles (`ADMIN`/`ANALYST`/`VIEWER`)
+  and nothing beyond that; see [Authorization](#authorization).
+- A frontend (React or otherwise) with a login UI — the existing frontend
+  (Phase 18) has none yet, so its `/query`/`/settings`/streaming calls now
+  fail with `401` until one is added; a known, accepted consequence of
+  Phase 22B protecting those routes, not a regression to fix here.
 - Result visualization — charts, HTML tables, CSV/Excel export.
 - Result caching — every phase defines a cache `Protocol` and a
   `NoOp*` implementation, deliberately not wired up.

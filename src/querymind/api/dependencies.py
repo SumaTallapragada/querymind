@@ -44,12 +44,20 @@ mapped-exception machinery every other engine's exceptions already go through
 deactivated account a `403`) with no special-casing here -- the only thing genuinely unique
 to *this* dependency is that "no token at all" isn't an exception from anything, so that one
 case is still raised directly, as an `HTTPException`.
+
+`RequireAdmin`/`RequireAnalyst`/`RequireViewer`/`RequireAnyRole` (Phase 22B) are the
+authorization counterpart: every one of them takes `CurrentUser` (never re-extracts or
+re-decodes a token of its own) and calls one of `AuthenticationService.require_role`/
+`require_any_role` -- no role comparison happens in this module either, only in the service,
+matching this whole module's "resolve, don't re-derive" rule one layer further. Like
+`get_current_user`, none of them catches the `querymind.auth.exceptions.AuthorizationError`
+either raises; it propagates to `querymind.api.exception_handlers` the same way.
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
@@ -57,6 +65,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import HTTPConnection
 
 from querymind.api.container import ApplicationContainer
+from querymind.auth.models import UserRole
 from querymind.auth.schemas import UserRead
 from querymind.auth.service import AuthenticationService
 from querymind.core.config import Settings
@@ -233,3 +242,68 @@ async def get_admin_user(user: CurrentUser) -> UserRead:
 
 
 RequireAdminUser = Annotated[UserRead, Depends(get_admin_user)]
+
+
+# -- Authorization (Phase 22B) -----------------------------------------------------------------
+#
+# Three fixed-role dependencies (`RequireAdmin`/`RequireAnalyst`/`RequireViewer`, ranked --
+# `AuthenticationService.require_role`'s own docstring explains what "ranked" means: `ADMIN`
+# satisfies a `RequireAnalyst`/`RequireViewer` route too) plus one general combinator
+# (`RequireAnyRole`) for a set of roles the rank order alone can't express. Every one of these
+# is genuinely reusable infrastructure, the same way `OptionalUser`/`RequireAdminUser` above
+# were added in Phase 22A Part 2 without every route using them immediately.
+
+
+async def get_admin_required_user(
+    user: CurrentUser, auth_service: AuthenticationServiceDep
+) -> UserRead:
+    auth_service.require_role(user, UserRole.ADMIN)
+    return user
+
+
+async def get_analyst_required_user(
+    user: CurrentUser, auth_service: AuthenticationServiceDep
+) -> UserRead:
+    """Ranked: an `ADMIN` satisfies this too (rank 3 >= rank 2) -- this is what "Query:
+    ANALYST or ADMIN"/"Streaming: ANALYST or ADMIN" (the route-protection matrix) resolve to;
+    no separate `RequireAnyRole(ANALYST, ADMIN)` is needed for either.
+    """
+    auth_service.require_role(user, UserRole.ANALYST)
+    return user
+
+
+async def get_viewer_required_user(
+    user: CurrentUser, auth_service: AuthenticationServiceDep
+) -> UserRead:
+    """Ranked at the floor -- `VIEWER`, `ANALYST`, and `ADMIN` all satisfy this; in practice
+    equivalent to `CurrentUser` for any user with a role at all (every role outranks or equals
+    `VIEWER`), but spelled out for a route that wants to document "any role, explicitly" rather
+    than "merely authenticated."
+    """
+    auth_service.require_role(user, UserRole.VIEWER)
+    return user
+
+
+RequireAdmin = Annotated[UserRead, Depends(get_admin_required_user)]
+RequireAnalyst = Annotated[UserRead, Depends(get_analyst_required_user)]
+RequireViewer = Annotated[UserRead, Depends(get_viewer_required_user)]
+
+
+def RequireAnyRole(*roles: UserRole) -> Any:  # noqa: N802 -- named like the dependency (`RequireX`)
+    # it stands in for, per this module's own established `Require*` convention; called as
+    # `RequireAnyRole(UserRole.ADMIN, UserRole.VIEWER)` *inside* `Annotated[...]`, not awaited
+    # or instantiated directly. Returns `Any`, not `Depends`/`UserRead`: `fastapi.Depends`'
+    # own stub return type is `Any` (by design -- so it type-checks as whatever the `Annotated`
+    # wrapping it declares), and that is the accurate type of what's actually returned here.
+    """A `Depends()` factory for an explicit, non-hierarchical set of acceptable roles --
+    `Annotated[UserRead, RequireAnyRole(UserRole.ADMIN, UserRole.VIEWER)]`. Prefer
+    `RequireAdmin`/`RequireAnalyst`/`RequireViewer` when a plain rank threshold already says
+    what you mean; reach for this only when it doesn't (e.g. "ADMIN or VIEWER, but not
+    ANALYST").
+    """
+
+    async def _check(user: CurrentUser, auth_service: AuthenticationServiceDep) -> UserRead:
+        auth_service.require_any_role(user, *roles)
+        return user
+
+    return Depends(_check)

@@ -6,13 +6,17 @@ via `QuestionRequest`), resolve `QueryMindEngineDep`, and call
 needs no exception handling of its own -- every possible outcome
 (success or failure) is already a `QueryMindResponse` with a `status`
 field, returned as-is.
+
+Requires at least `ANALYST` (Phase 22B) -- running the pipeline calls the LLM and (via
+execution) reads real data; a `VIEWER` is not meant to trigger either. `RequireAnalyst` is
+ranked, so `ADMIN` satisfies this too -- see its own docstring.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from querymind.api.dependencies import MetricsCollectorDep, QueryMindEngineDep
+from querymind.api.dependencies import MetricsCollectorDep, QueryMindEngineDep, RequireAnalyst
 from querymind.api.models.request import QuestionRequest
 from querymind.observability.metrics import MetricsCollector
 from querymind.orchestrator.models import PipelineStatus, QueryMindResponse
@@ -55,7 +59,8 @@ def _record_metrics(collector: MetricsCollector, response: QueryMindResponse) ->
         "retrieval, prompt compilation, SQL generation, validation, conditional repair, "
         "execution, and result formatting. Always returns a `QueryMindResponse` -- check "
         "`status` (`success`/`failed`) rather than the HTTP status code to distinguish a "
-        "pipeline-level failure (still a `200`) from a transport-level one."
+        "pipeline-level failure (still a `200`) from a transport-level one. Requires at least "
+        "the `analyst` role."
     ),
     responses={
         200: {
@@ -76,6 +81,7 @@ async def ask_question(
     request: QuestionRequest,
     engine: QueryMindEngineDep,
     metrics_collector: MetricsCollectorDep,
+    _analyst: RequireAnalyst,
 ) -> QueryMindResponse:
     response = await engine.ask(request.question)
     _record_metrics(metrics_collector, response)

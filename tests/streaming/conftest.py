@@ -19,12 +19,25 @@ returning or raising -- controllable enough to test `stream_pipeline_events`,
 `POST /query/stream`, and `/ws/query` without a real pipeline, mirroring
 `tests/orchestrator/test_engine.py`'s own `_FakeRunner` precedent one
 layer up.
+
+`authorize_websocket_app` (Phase 22B) is `/ws/query`'s equivalent of overriding
+`get_current_user`: that dependency override has no effect on `/ws/query`, since
+`querymind.streaming.websocket._authenticate_and_authorize` reaches
+`container.authentication_service` directly rather than through `Depends()` (a WebSocket route
+can't use `OAuth2PasswordBearer` -- see that module's own docstring for why). This overrides
+`get_container` instead, with a copy of the real, already-built container whose
+`authentication_service` is swapped for `_FakeWsAuthenticationService` -- every other engine
+`/ws/query` resolves off the container (`QueryMindEngineDep`, `EventBusDep`, `LoggerDep`) is
+either independently overridden by the test or comes through unchanged, since `dataclasses.replace`
+only touches the one field.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncIterator
+from typing import cast
 
 import pytest
 from asgi_lifespan import LifespanManager
@@ -32,6 +45,11 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from querymind.api.app import create_app
+from querymind.api.container import ApplicationContainer
+from querymind.api.dependencies import get_container
+from querymind.auth.exceptions import ForbiddenRoleError
+from querymind.auth.models import UserRole
+from querymind.auth.schemas import UserRead
 from querymind.core.config import Settings
 from querymind.orchestrator.events import StageEventPublisher
 from querymind.orchestrator.models import (
@@ -40,6 +58,44 @@ from querymind.orchestrator.models import (
     PipelineStatus,
     QueryMindResponse,
 )
+from tests.api.conftest import make_user_read
+
+_ROLE_RANK = {UserRole.VIEWER: 1, UserRole.ANALYST: 2, UserRole.ADMIN: 3}
+
+
+class _FakeWsAuthenticationService:
+    """Duck-typed stand-in for `container.authentication_service`, accepting any non-empty
+    token as `role` -- these tests exist to prove pipeline streaming over WebSocket, not
+    authentication/authorization itself (covered by `tests/auth`, `tests/api/test_dependencies.py`,
+    and the Phase 22B authorization suite, the latter using a real token against a real
+    database for `/ws/query` specifically).
+    """
+
+    def __init__(self, role: UserRole) -> None:
+        self._role = role
+
+    async def get_current_user(self, access_token: str) -> UserRead:
+        return make_user_read(role=self._role)
+
+    def require_role(self, user: UserRead, minimum_role: UserRole) -> None:
+        if _ROLE_RANK[cast(UserRole, user.role)] < _ROLE_RANK[minimum_role]:
+            raise ForbiddenRoleError(
+                f"This action requires at least the {minimum_role.value!r} role; "
+                f"the current user has {user.role.value!r}."
+            )
+
+
+def authorize_websocket_app(app: FastAPI, role: UserRole = UserRole.ANALYST) -> None:
+    """Make `/ws/query` accept any token as `role` for `app`, without a real database.
+
+    Safe to call any time before the request is issued -- the override is a lazily evaluated
+    callable, so `app.state.container` only needs to exist by the time a request actually
+    arrives (after the app's lifespan has started), not when this function runs.
+    """
+    app.dependency_overrides[get_container] = lambda: dataclasses.replace(
+        cast(ApplicationContainer, app.state.container),
+        authentication_service=_FakeWsAuthenticationService(role),  # type: ignore[arg-type]
+    )
 
 
 @pytest.fixture

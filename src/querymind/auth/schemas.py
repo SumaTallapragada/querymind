@@ -14,6 +14,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from querymind.auth.models import UserRole
+
 
 class UserCreate(BaseModel):
     """Input to `AuthenticationService.register_user` -- a plaintext password, never persisted
@@ -51,6 +53,7 @@ class UserRead(BaseModel):
     email: str
     is_active: bool
     is_superuser: bool
+    role: UserRole
     created_at: datetime
     updated_at: datetime
 

@@ -16,11 +16,11 @@ from collections.abc import AsyncIterator
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from querymind.api.app import create_app
-from querymind.auth.models import RefreshToken, User
+from querymind.auth.models import RefreshToken, User, UserRole
 from querymind.core.config import Settings
 from querymind.db.engine import create_engine
 from querymind.db.session import create_session_factory
@@ -67,6 +67,21 @@ async def _login(
     assert response.status_code == 200, response.text
     tokens: dict[str, str] = response.json()
     return tokens
+
+
+async def _promote_to_admin(settings: Settings, username: str) -> None:
+    """Direct database write -- there is no HTTP endpoint for this (Phase 22B deliberately
+    gives self-registration no way to pick a role; see `AuthenticationRepository.create_user`'s
+    own docstring), so this is the only way a test can produce an `ADMIN` user at all.
+    """
+    engine = create_engine(settings)
+    session_factory: async_sessionmaker[AsyncSession] = create_session_factory(engine)
+    async with session_factory() as session:
+        await session.execute(
+            update(User).where(User.username == username).values(role=UserRole.ADMIN)
+        )
+        await session.commit()
+    await engine.dispose()
 
 
 class TestRegistrationAndLogin:
@@ -204,3 +219,73 @@ class TestFullLifecycle:
             "/api/v1/auth/me", headers={"Authorization": f"Bearer {tokens['access_token']}"}
         )
         assert response.status_code == 200
+
+
+class TestAuthorizationEndToEnd:
+    """Phase 22B, against the real database and real HTTP -- proves the role check reads the
+    database on every request rather than a value cached anywhere, which is exactly why a role
+    is never stored in the JWT itself (see `querymind.auth.models.UserRole`'s own docstring):
+    the *same*, already-issued access token is rejected before promotion and accepted after,
+    with no new login and no new token.
+    """
+
+    async def test_a_freshly_registered_user_is_rejected_from_an_admin_route(
+        self, real_client: AsyncClient
+    ) -> None:
+        await _register(real_client, "role_kate")
+        tokens = await _login(real_client, "role_kate")
+
+        response = await real_client.get(
+            "/api/v1/settings", headers={"Authorization": f"Bearer {tokens['access_token']}"}
+        )
+
+        assert response.status_code == 403
+
+    async def test_promoting_the_user_to_admin_takes_effect_on_the_next_request(
+        self, real_client: AsyncClient, real_settings: Settings
+    ) -> None:
+        await _register(real_client, "role_leo")
+        tokens = await _login(real_client, "role_leo")
+        rejected = await real_client.get(
+            "/api/v1/settings", headers={"Authorization": f"Bearer {tokens['access_token']}"}
+        )
+        assert rejected.status_code == 403
+
+        await _promote_to_admin(real_settings, "role_leo")
+
+        accepted = await real_client.get(
+            "/api/v1/settings", headers={"Authorization": f"Bearer {tokens['access_token']}"}
+        )
+        assert accepted.status_code == 200
+
+    async def test_a_freshly_registered_default_analyst_reaches_an_analyst_gated_route(
+        self, real_client: AsyncClient
+    ) -> None:
+        """Default role is `ANALYST` (the migration's own `server_default`) -- no promotion
+        needed to satisfy `RequireAnalyst`.
+        """
+        await _register(real_client, "role_mia")
+        tokens = await _login(real_client, "role_mia")
+
+        response = await real_client.post(
+            "/api/v1/query/validate",
+            json={"sql": "SELECT 1;"},
+            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        )
+
+        assert response.status_code == 200
+
+    async def test_any_authenticated_role_reaches_the_health_report(
+        self, real_client: AsyncClient
+    ) -> None:
+        """`GET /api/v1/health` requires only that the caller is authenticated -- a default
+        `ANALYST` is never `403` here, unlike the `ADMIN`-only routes above.
+        """
+        await _register(real_client, "role_nick")
+        tokens = await _login(real_client, "role_nick")
+
+        response = await real_client.get(
+            "/api/v1/health", headers={"Authorization": f"Bearer {tokens['access_token']}"}
+        )
+
+        assert response.status_code != 403

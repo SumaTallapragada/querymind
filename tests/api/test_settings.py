@@ -1,10 +1,24 @@
 """Unit tests for `GET /api/v1/settings`. Real `SettingsDep` (the hermetic test `Settings`
 fixture) -- no engine to mock, since this route only reads values already on `Settings`.
+
+Requires `ADMIN` (Phase 22B) -- `_authenticated_as_admin` below overrides `get_current_user`
+for every test in this file; see `test_diagnostics.py`'s identical fixture for why.
 """
 
 from __future__ import annotations
 
+import pytest
+from fastapi import FastAPI
 from httpx import AsyncClient
+
+from querymind.api.dependencies import get_current_user
+from querymind.auth.models import UserRole
+from tests.api.conftest import make_user_read
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_as_admin(app: FastAPI) -> None:
+    app.dependency_overrides[get_current_user] = lambda: make_user_read(role=UserRole.ADMIN)
 
 
 async def test_returns_read_only_configuration(client: AsyncClient) -> None:

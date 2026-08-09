@@ -5,13 +5,16 @@ single required argument needs no wrapper DTO) and calls
 `ResultFormatterEngine.format`. That engine only accepts a successful
 execution -- a non-`SUCCESS` `SQLExecutionResult` raises `FormattingError`,
 mapped by `querymind.api.exception_handlers` to `422 Unprocessable Entity`.
+
+Requires at least `ANALYST` (Phase 22B) -- part of the same `/query/*` family, protected the
+same way even though this one is pure formatting with no I/O of its own.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from querymind.api.dependencies import ResultFormatterEngineDep
+from querymind.api.dependencies import RequireAnalyst, ResultFormatterEngineDep
 from querymind.result_formatter.models import BusinessAnswer
 from querymind.sql_execution.models import SQLExecutionResult
 
@@ -27,10 +30,12 @@ router = APIRouter(prefix="/query/format", tags=["query"])
         "Converts a successful `SQLExecutionResult` into a deterministic, non-interpretive "
         "`BusinessAnswer` (a formatted table, a summary built only from the result's own "
         "shape, and an answer-type classification). Requires `execution_result.status` to "
-        "already be `success`."
+        "already be `success`. Requires at least the `analyst` role."
     ),
 )
 async def format_result(
-    execution_result: SQLExecutionResult, formatter: ResultFormatterEngineDep
+    execution_result: SQLExecutionResult,
+    formatter: ResultFormatterEngineDep,
+    _analyst: RequireAnalyst,
 ) -> BusinessAnswer:
     return formatter.format(execution_result)

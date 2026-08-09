@@ -614,5 +614,81 @@ unit tests (a hand-written fake `AuthenticationService`, mirroring `tests/api/te
 own `_FakeEngine`) plus `tests/api/test_auth_integration.py` (the real database, through real
 HTTP) for the API layer.
 
+## 20. Authorization (Phase 22B)
+
+Role-based authorization, purely additive on top of [§19](#19-authentication-phase-22a): no
+change to `AuthenticationService`'s pre-existing methods, JWT shape, login flow, or refresh-token
+logic. Authentication (§19) answers "who are you"; this phase answers "what are you allowed to
+do" — a second, independent question, deliberately kept as a second, independent set of
+collaborators rather than folded into the first.
+
+- **Three ranked roles, nothing more.** `auth.models.UserRole` is `ADMIN` > `ANALYST` > `VIEWER`
+  — no permissions system, no ABAC, no per-resource grants. `User.role` is a `NOT NULL` column
+  with a database-level default (`ANALYST`), mapped the same way
+  `models.customer.CustomerSegment` maps its own enum (`native_enum=False` — a `VARCHAR` plus a
+  `CHECK` constraint, not a Postgres `ENUM` type, so a future fourth role is a plain,
+  no-downtime column-constraint migration, never an `ALTER TYPE`). The Alembic migration
+  (`alembic/versions/f76b40117bc0_add_role_column_to_users.py`) is additive only:
+  `op.add_column(..., server_default="analyst")` backfills every existing row without a second
+  pass, and self-registration (`AuthenticationRepository.create_user`) still has no `role`
+  parameter at all — there is no HTTP path to self-elevate; only a direct database write can
+  produce an `ADMIN`.
+- **A role is never stored in the JWT.** `AuthenticationService.get_current_user` (§19) resolves
+  a fresh `User` row from the database on every request, so `require_role`/`require_any_role`
+  always see the caller's *current* role — a promotion or demotion takes effect on that caller's
+  very next request, not only after their existing access token happens to expire.
+- **Authorization lives on `AuthenticationService`, not in routes.** Four new methods, all pure
+  functions of an already-resolved `UserRead` (no repository call, no I/O): `has_role`/`is_admin`
+  (informational, exact match) and `require_role`/`require_any_role` (enforcing, raise on
+  failure). `require_role` is *ranked* — a `minimum_role` of `ANALYST` is satisfied by `ANALYST`
+  or `ADMIN`, not only an exact match — while `require_any_role` is exact-set membership with no
+  hierarchy, for combinations rank alone can't express (e.g. "`ADMIN` or `VIEWER`, but not
+  `ANALYST`"). No route, and no `api.dependencies` function, ever compares `user.role` itself —
+  every comparison happens exactly once, in these four methods.
+- **`RequireAdmin`/`RequireAnalyst`/`RequireViewer`/`RequireAnyRole` (`api.dependencies`)** are
+  the reusable `Depends()` counterparts, mirroring §19's own `CurrentUser`/`RequireAdminUser`
+  pattern exactly: every one of them takes `CurrentUser` as its own dependency (never re-extracts
+  or re-decodes a token) and calls one `AuthenticationService` method above. `RequireAdminUser`
+  (§19, `is_superuser`-based) is left completely untouched — genuinely parallel, deliberately
+  separate infrastructure, not superseded; a route picks whichever check it actually means.
+- **`AuthorizationError`/`ForbiddenRoleError`/`InsufficientPermissionsError`
+  (`auth.exceptions`)** are a second hierarchy alongside `AuthenticationError` (§19) — an
+  authorization failure means the caller *is* who their token says, just not permitted, which is
+  always `403`, never `401`. Both map through the same `exception_handlers` lookup table every
+  other phase's exceptions already go through.
+- **The protected-route matrix**, applied without touching any route's own business logic (only
+  adding one `Depends()` parameter per route):
+
+  | Route(s) | Requirement |
+  | --- | --- |
+  | `GET /auth/me` | Authenticated (any role) — unchanged from §19 |
+  | `GET /health/diagnostics`, `GET /health/metrics`, `GET /settings` | `ADMIN` |
+  | `POST /query`, `/query/sql`, `/query/validate`, `/query/repair`, `/query/execute`, `/query/format`, `/query/stream`, `/ws/query` | `ANALYST` (ranked — `ADMIN` also satisfies it) |
+  | `GET /health` (the full report) | Authenticated (any role) |
+  | `GET /health/live`, `GET /health/ready` | **Unauthenticated, deliberately** |
+
+  The one deviation from a literal reading of "Health: authenticated users" is `/health/live`/
+  `/health/ready`: Docker/Compose's own `HEALTHCHECK` (`docker-compose.yml`, `Dockerfile.backend`)
+  calls `/health/live` with no credentials at all, so authenticating it would break container
+  orchestration — a reasoned, documented exception, not an oversight.
+- **`/ws/query` cannot use `RequireAnalyst`.** `fastapi.security.OAuth2PasswordBearer` (what
+  `CurrentUser`/every `Require*` dependency is built on) raises a bare `TypeError` on a
+  WebSocket route — FastAPI never injects a `Request` for a `websocket`-scope connection, and
+  `OAuth2PasswordBearer.__call__`'s signature requires one. `streaming.websocket`'s own
+  `_authenticate_and_authorize` is the necessary substitute: it still delegates entirely to
+  `AuthenticationService.get_current_user`/`require_role` (no duplicated JWT decoding or role
+  comparison), it just resolves the container directly and runs before `.accept()` rather than as
+  a `Depends()`. It also accepts the token via a `token` query parameter as well as the
+  `Authorization` header, since a browser's native `WebSocket` API cannot set custom headers at
+  all.
+
+Tested the same way §19's own layers are, one level added per layer: `tests/auth/test_models.py`
+(the `role` column's metadata), `tests/auth/test_repository.py`/`test_service.py` (the real
+database default; the four pure methods), `tests/api/test_dependencies.py` (every `Require*`
+function called directly), `tests/api/test_authorization.py` (the 401/403 HTTP boundary, mocked),
+and `tests/api/test_auth_integration.py`/`tests/streaming/test_integration.py` (the real
+database end to end — including promoting a registered user to `ADMIN` and downgrading one to
+`VIEWER` by direct database write, since there is no HTTP path to do either).
+
 See [`SYSTEM_DESIGN.md`](SYSTEM_DESIGN.md) for the complete model-by-model
 walkthrough of what flows between every stage.

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from querymind.auth.models import UserRole
 from querymind.auth.schemas import (
     AuthenticationResult,
     RefreshRequest,
@@ -67,6 +68,7 @@ class TestUserRead:
         user.id = 1
         user.is_active = True
         user.is_superuser = False
+        user.role = UserRole.ANALYST
         user.created_at = datetime(2026, 1, 1, tzinfo=UTC)
         user.updated_at = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -93,6 +95,7 @@ class TestAuthenticationResult:
             email="alice@example.com",
             is_active=True,
             is_superuser=False,
+            role=UserRole.ANALYST,
             created_at=datetime(2026, 1, 1, tzinfo=UTC),
             updated_at=datetime(2026, 1, 1, tzinfo=UTC),
         )

@@ -8,7 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from querymind.auth.cache import AuthenticationCache, NoOpAuthenticationCache
-from querymind.auth.models import User
+from querymind.auth.models import User, UserRole
 
 
 def _user() -> User:
@@ -16,6 +16,7 @@ def _user() -> User:
     user.id = 1
     user.is_active = True
     user.is_superuser = False
+    user.role = UserRole.ANALYST
     user.created_at = datetime(2026, 1, 1, tzinfo=UTC)
     user.updated_at = datetime(2026, 1, 1, tzinfo=UTC)
     return user

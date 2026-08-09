@@ -2,20 +2,32 @@
 the route wraps externally supplied SQL in an honest, clearly-synthetic `GeneratedSQL`
 placeholder (never invents or alters the SQL text itself) and returns whatever
 `SQLValidationEngine.validate` reports, unchanged.
+
+Requires at least `ANALYST` (Phase 22B) -- `_authenticated_as_analyst` below overrides
+`get_current_user` for every test in this file; see `test_diagnostics.py`'s identical fixture
+for why.
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from querymind.api.dependencies import get_sql_validation_engine
+from querymind.api.dependencies import get_current_user, get_sql_validation_engine
+from querymind.auth.models import UserRole
 from querymind.query_library.models import SQLDialect
 from querymind.sql_generation.models import GeneratedSQL
 from querymind.sql_validation.models import SQLValidationResult
+from tests.api.conftest import make_user_read
 from tests.orchestrator.conftest import make_generated_sql, make_issue, make_validation_result
 
 _SQL = "SELECT customer_id FROM customers LIMIT 5;"
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_as_analyst(app: FastAPI) -> None:
+    app.dependency_overrides[get_current_user] = lambda: make_user_read(role=UserRole.ANALYST)
 
 
 class _FakeValidationEngine:

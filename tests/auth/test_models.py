@@ -10,7 +10,7 @@ from typing import cast
 
 import sqlalchemy as sa
 
-from querymind.auth.models import AuthBase, RefreshToken, User
+from querymind.auth.models import AuthBase, RefreshToken, User, UserRole
 from querymind.models.base import Base
 
 
@@ -96,6 +96,46 @@ class TestUserTable:
 
     def test_has_a_refresh_tokens_relationship(self) -> None:
         assert hasattr(User, "refresh_tokens")
+
+
+class TestUserRole:
+    """`UserRole` (Phase 22B) -- exactly three roles, ranked `ADMIN` > `ANALYST` > `VIEWER`
+    (the ranking itself lives on `AuthenticationService._ROLE_RANK`, not here; this only
+    checks the enum's own shape).
+    """
+
+    def test_has_exactly_three_members(self) -> None:
+        assert {member.value for member in UserRole} == {"admin", "analyst", "viewer"}
+
+    def test_is_a_str_enum(self) -> None:
+        assert UserRole.ADMIN == "admin"
+        assert isinstance(UserRole.ADMIN, str)
+
+
+class TestUserRoleColumn:
+    """`role` (Phase 22B) -- additive: a `NOT NULL` column with a database-level default, so
+    `alembic/versions/f76b40117bc0_add_role_column_to_users.py` never breaks an existing row.
+    `test_repository.py::TestCreateUser::test_defaults_role_to_analyst` proves the default is
+    actually applied by the real database, not just declared here.
+    """
+
+    def test_role_column_exists_and_is_not_nullable(self) -> None:
+        column = User.__table__.columns["role"]
+        assert column.nullable is False
+
+    def test_role_defaults_to_analyst(self) -> None:
+        column = User.__table__.columns["role"]
+        assert column.server_default is not None
+        assert column.server_default.arg == UserRole.ANALYST.value
+
+    def test_role_is_backed_by_a_check_constraint_not_a_native_enum_type(self) -> None:
+        """`native_enum=False` (see `models.py`'s own docstring for why): a `VARCHAR` column
+        plus a `CHECK` constraint, not a Postgres `CREATE TYPE ... AS ENUM`, so a future fourth
+        role never needs an `ALTER TYPE` migration.
+        """
+        column = User.__table__.columns["role"]
+        assert isinstance(column.type, sa.Enum)
+        assert column.type.native_enum is False
 
 
 class TestRefreshTokenTable:

@@ -4,13 +4,18 @@ Reuses `querymind.observability.DiagnosticsEngine` directly -- deeper and
 more detailed than `/health` (a `PASS`/`WARNING`/`ERROR` plus a message
 per check, including dependency versions and cache configuration), aimed
 at a human debugging a problem rather than an automated probe.
+
+Requires `ADMIN` (Phase 22B) -- dependency versions, cache configuration, and per-check detail
+messages are exactly the kind of internal detail this project's own security posture (see
+`SettingsResponse`'s docstring on never exposing a secret) already treats as sensitive; this
+endpoint is one step more detailed than that, not less.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Response, status
 
-from querymind.api.dependencies import DiagnosticsEngineDep
+from querymind.api.dependencies import DiagnosticsEngineDep, RequireAdmin
 from querymind.observability.models import DiagnosticsReport, DiagnosticStatus
 
 router = APIRouter(prefix="/health/diagnostics", tags=["health"])
@@ -25,11 +30,11 @@ router = APIRouter(prefix="/health/diagnostics", tags=["health"])
         "library, relationship graph, prompt compiler, LLM configuration, database "
         "connectivity, dependency versions, and cache configuration. Each finding is "
         "`pass`/`warning`/`error`; the endpoint returns `503` only if `overall_status` is "
-        "`error`."
+        "`error`. Requires the `admin` role."
     ),
 )
 async def diagnostics(
-    response: Response, diagnostics_engine: DiagnosticsEngineDep
+    response: Response, diagnostics_engine: DiagnosticsEngineDep, _admin: RequireAdmin
 ) -> DiagnosticsReport:
     report = await diagnostics_engine.run()
     if report.overall_status is DiagnosticStatus.ERROR:

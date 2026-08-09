@@ -5,6 +5,11 @@ Mirrors every other phase's exception-hierarchy convention (see e.g.
 one subclass per distinct failure mode a caller might need to handle
 differently. Nothing here is HTTP-aware -- mapping these to a status
 code is the API layer's job (Phase 22A Part 2), not this package's.
+
+`AuthorizationError` (Phase 22B) is a deliberately separate hierarchy, not a subclass of
+`AuthenticationError` -- the two answer different questions ("who are you" vs. "what are you
+allowed to do"), and a caller that wants to handle "not logged in" and "logged in, but not
+permitted" differently needs them to never be confusable via `isinstance`.
 """
 
 from __future__ import annotations
@@ -58,4 +63,25 @@ class RefreshTokenRevokedError(AuthenticationError):
     """Raised by `AuthenticationService` when a refresh token's `jti` resolves to a real,
     unexpired `RefreshToken` row, but `revoked` is `True` -- e.g. reused after `logout()` or
     after being rotated away by an earlier `refresh_tokens()` call.
+    """
+
+
+class AuthorizationError(Exception):
+    """Base class for every exception raised by `querymind.auth`'s role-checking helpers
+    (Phase 22B) -- see this module's own docstring for why this is not an `AuthenticationError`
+    subclass.
+    """
+
+
+class ForbiddenRoleError(AuthorizationError):
+    """Raised by `AuthenticationService.require_role` when a user's role does not meet the
+    required rank (`ADMIN` > `ANALYST` > `VIEWER`) -- e.g. a `VIEWER` calling a route that
+    requires at least `ANALYST`.
+    """
+
+
+class InsufficientPermissionsError(AuthorizationError):
+    """Raised by `AuthenticationService.require_any_role` when a user's role is not among an
+    explicit, non-hierarchical set of acceptable roles -- distinct from `ForbiddenRoleError`,
+    which is about a single rank threshold, not a specific set.
     """

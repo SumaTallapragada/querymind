@@ -20,7 +20,9 @@ from fastapi.responses import JSONResponse
 from querymind.api.models.response import ErrorResponse
 from querymind.auth.exceptions import (
     DuplicateUserError,
+    ForbiddenRoleError,
     InactiveUserError,
+    InsufficientPermissionsError,
     InvalidCredentialsError,
     InvalidTokenError,
     RefreshTokenRevokedError,
@@ -40,9 +42,12 @@ from querymind.sql_repair import SQLRepairConfigurationError
 
 #: (exception type, HTTP status code) pairs, most specific first -- checked in order, so a
 #: subclass listed before its parent always wins. Anything not listed here falls back to 500.
-#: The six `querymind.auth.exceptions` entries are Phase 22A Part 2's only addition here --
-#: every one of them is already raised by `AuthenticationService` (Part 1, unchanged); this is
-#: just where every other engine's exceptions already get mapped to a status code too.
+#: The `querymind.auth.exceptions` entries are Phase 22A Part 2's (six `AuthenticationError`
+#: subclasses) and Phase 22B's (two `AuthorizationError` subclasses, both 403 -- authorization
+#: failures are never 401: the caller *is* authenticated, `CurrentUser` already succeeded,
+#: they're just not permitted to do this one thing) only additions here -- every one of them is
+#: already raised by `AuthenticationService` (Parts 1/2, unchanged this phase); this is just
+#: where every other engine's exceptions already get mapped to a status code too.
 _STATUS_BY_EXCEPTION: tuple[tuple[type[Exception], int], ...] = (
     (EmptyQuestionError, status.HTTP_400_BAD_REQUEST),
     (ExecutionRejectedError, status.HTTP_400_BAD_REQUEST),
@@ -59,6 +64,8 @@ _STATUS_BY_EXCEPTION: tuple[tuple[type[Exception], int], ...] = (
     (TokenExpiredError, status.HTTP_401_UNAUTHORIZED),
     (RefreshTokenRevokedError, status.HTTP_401_UNAUTHORIZED),
     (InactiveUserError, status.HTTP_403_FORBIDDEN),
+    (ForbiddenRoleError, status.HTTP_403_FORBIDDEN),
+    (InsufficientPermissionsError, status.HTTP_403_FORBIDDEN),
 )
 
 

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 import yaml
 
+from querymind.auth.models import UserRole
 from querymind.auth.schemas import TokenPair, UserRead
 from querymind.auth.serializer import AuthenticationSerializer
 
@@ -20,6 +21,7 @@ def _user_read() -> UserRead:
         email="alice@example.com",
         is_active=True,
         is_superuser=False,
+        role=UserRole.ANALYST,
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
         updated_at=datetime(2026, 1, 1, tzinfo=UTC),
     )

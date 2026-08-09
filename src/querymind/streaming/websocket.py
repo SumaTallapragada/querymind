@@ -13,6 +13,17 @@ Unlike HTTP routes, a WebSocket connection never passes through
 scope ones) -- this module binds its own request/correlation ID pair and
 `structlog` context instead, mirroring what that middleware does for
 every HTTP request.
+
+Requires at least `ANALYST` (Phase 22B), same as `POST /query/stream` -- but not via
+`RequireAnalyst`/`Depends()`. Verified empirically that `fastapi.security.OAuth2PasswordBearer`
+(what `RequireAnalyst`/`CurrentUser` are built on) raises a bare `TypeError` on a WebSocket
+route: FastAPI never injects a `Request` for a `websocket`-scope connection, and
+`OAuth2PasswordBearer.__call__`'s signature requires one. `_authenticate_and_authorize` below
+is the necessary substitute -- it still delegates entirely to
+`AuthenticationService.get_current_user`/`.require_role` (no JWT decoding or role comparison of
+its own), it just can't be a `Depends()`-resolved dependency here. It also accepts the token via
+a `token` query parameter as well as the `Authorization` header, since a browser's native
+`WebSocket` API cannot set custom headers at all -- only non-browser WebSocket clients can.
 """
 
 from __future__ import annotations
@@ -23,12 +34,41 @@ import structlog
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 from pydantic import ValidationError
 
-from querymind.api.dependencies import EventBusDep, LoggerDep, QueryMindEngineDep
+from querymind.api.container import ApplicationContainer
+from querymind.api.dependencies import ContainerDep, EventBusDep, LoggerDep, QueryMindEngineDep
 from querymind.api.models.request import QuestionRequest
+from querymind.auth.exceptions import AuthenticationError, AuthorizationError
+from querymind.auth.models import UserRole
+from querymind.auth.schemas import UserRead
 from querymind.streaming.serializer import serialize_event
 from querymind.streaming.subscriber import stream_pipeline_events
 
 router = APIRouter(tags=["streaming"])
+
+
+async def _authenticate_and_authorize(
+    websocket: WebSocket, container: ApplicationContainer
+) -> UserRead | None:
+    """Resolve and role-check the caller *before* `.accept()`, rejecting the handshake outright
+    on failure (verified: closing before accept correctly surfaces as a rejected connection to
+    the client, not a silently-accepted-then-dropped one) rather than catching an exception --
+    a WebSocket route's own errors don't flow through the HTTP-response-shaped
+    `querymind.api.exception_handlers` the way an HTTP route's do, so this mirrors the
+    established inline-validation pattern already used a few lines below for an invalid request
+    body, not that mechanism.
+    """
+    authorization = websocket.headers.get("Authorization", "")
+    token = authorization.removeprefix("Bearer ").strip() or websocket.query_params.get("token")
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Not authenticated.")
+        return None
+    try:
+        user = await container.authentication_service.get_current_user(token)
+        container.authentication_service.require_role(user, UserRole.ANALYST)
+    except (AuthenticationError, AuthorizationError) as exc:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=str(exc)[:120])
+        return None
+    return user
 
 
 @router.websocket("/ws/query")
@@ -37,7 +77,11 @@ async def stream_query_ws(
     engine: QueryMindEngineDep,
     event_bus: EventBusDep,
     logger: LoggerDep,
+    container: ContainerDep,
 ) -> None:
+    if await _authenticate_and_authorize(websocket, container) is None:
+        return
+
     await websocket.accept()
 
     correlation_id = uuid.uuid4().hex

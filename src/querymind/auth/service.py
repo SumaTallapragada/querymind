@@ -20,7 +20,9 @@ from sqlalchemy.exc import IntegrityError
 from querymind.auth import jwt as jwt_module
 from querymind.auth.exceptions import (
     DuplicateUserError,
+    ForbiddenRoleError,
     InactiveUserError,
+    InsufficientPermissionsError,
     InvalidCredentialsError,
     InvalidTokenError,
     RefreshTokenRevokedError,
@@ -28,10 +30,21 @@ from querymind.auth.exceptions import (
 )
 from querymind.auth.jwt import DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES, DEFAULT_ALGORITHM
 from querymind.auth.jwt import DEFAULT_REFRESH_TOKEN_EXPIRE_DAYS as _DEFAULT_REFRESH_DAYS
-from querymind.auth.models import RefreshToken
+from querymind.auth.models import RefreshToken, UserRole
 from querymind.auth.passwords import hash_password, verify_password
 from querymind.auth.repository import AuthenticationRepository
 from querymind.auth.schemas import TokenPair, UserRead
+
+#: `ADMIN` > `ANALYST` > `VIEWER` -- what "ranked" means for `require_role`. A plain module-level
+#: dict, not a method on `UserRole` itself: ranking is an *authorization* concept (Phase 22B),
+#: while `querymind.auth.models` stays persistence-only (column/enum definitions, no business
+#: logic) -- the same separation `querymind.auth.repository`'s own docstring already draws
+#: between "the shape of the data" and "the rules about it."
+_ROLE_RANK: dict[UserRole, int] = {
+    UserRole.VIEWER: 1,
+    UserRole.ANALYST: 2,
+    UserRole.ADMIN: 3,
+}
 
 
 class AuthenticationService:
@@ -194,3 +207,50 @@ class AuthenticationService:
         if not user.is_active:
             raise InactiveUserError("This account is no longer active.")
         return UserRead.model_validate(user)
+
+    # -- Authorization (Phase 22B) ---------------------------------------------------------
+    #
+    # Everything below answers "what is this already-authenticated user allowed to do,"
+    # never "who are they" -- pure, synchronous functions of a `UserRead` already resolved by
+    # `get_current_user` above, no I/O, no new exception a caller could confuse with an
+    # `AuthenticationError` (see `querymind.auth.exceptions`' own module docstring for why
+    # `AuthorizationError` is a separate hierarchy). Kept as methods here, not free functions
+    # elsewhere, so "no duplicated authorization logic inside routes" has exactly one place to
+    # mean: every `Depends()` in `querymind.api.dependencies` that checks a role calls one of
+    # these, never comparing `user.role` itself.
+
+    def has_role(self, user: UserRead, role: UserRole) -> bool:
+        """Exact match -- does `user` have precisely `role`? Informational (e.g. for a UI to
+        decide what to show), not hierarchical -- see `require_role` for the ranked version
+        used to actually gate an action.
+        """
+        return user.role is role
+
+    def is_admin(self, user: UserRead) -> bool:
+        """Shorthand for `has_role(user, UserRole.ADMIN)` -- the single most common check."""
+        return self.has_role(user, UserRole.ADMIN)
+
+    def require_role(self, user: UserRead, minimum_role: UserRole) -> None:
+        """Enforce a *ranked* minimum: `ADMIN` (rank 3) satisfies a `minimum_role` of `ANALYST`
+        (rank 2) or `VIEWER` (rank 1); `ANALYST` satisfies `ANALYST`/`VIEWER` but not `ADMIN`;
+        `VIEWER` satisfies only `VIEWER`. Raises `ForbiddenRoleError` otherwise -- this is the
+        method every `RequireAdmin`/`RequireAnalyst`/`RequireViewer` dependency calls.
+        """
+        if _ROLE_RANK[user.role] < _ROLE_RANK[minimum_role]:
+            raise ForbiddenRoleError(
+                f"This action requires at least the {minimum_role.value!r} role; "
+                f"the current user has {user.role.value!r}."
+            )
+
+    def require_any_role(self, user: UserRead, *roles: UserRole) -> None:
+        """Enforce exact-set membership, no rank/hierarchy involved -- for a combination of
+        roles the rank order alone can't express (e.g. "ADMIN or VIEWER, but not ANALYST").
+        Raises `InsufficientPermissionsError` otherwise. `RequireAnyRole(...)`
+        (`querymind.api.dependencies`) is the one caller.
+        """
+        if user.role not in roles:
+            allowed = ", ".join(role.value for role in roles)
+            raise InsufficientPermissionsError(
+                f"This action requires one of the following roles: {allowed}; "
+                f"the current user has {user.role.value!r}."
+            )

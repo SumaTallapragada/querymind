@@ -1,16 +1,27 @@
 """Unit tests for `POST /api/v1/query`. `QueryMindEngineDep` is mocked -- these tests verify
 the route's own, and only, responsibilities: validating the request body, calling
 `QueryMindEngine.ask`, recording metrics from the response, and returning it unchanged.
+
+Requires at least `ANALYST` (Phase 22B) -- `_authenticated_as_analyst` below overrides
+`get_current_user` for every test in this file; see `test_diagnostics.py`'s identical fixture
+for why.
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from querymind.api.dependencies import get_metrics_collector, get_query_mind_engine
+from querymind.api.dependencies import (
+    get_current_user,
+    get_metrics_collector,
+    get_query_mind_engine,
+)
+from querymind.auth.models import UserRole
 from querymind.observability.metrics import InMemoryMetricsCollector
 from querymind.orchestrator.models import PipelineStatistics, PipelineStatus, QueryMindResponse
+from tests.api.conftest import make_user_read
 from tests.orchestrator.conftest import (
     make_business_answer,
     make_execution_result,
@@ -19,6 +30,11 @@ from tests.orchestrator.conftest import (
 )
 
 _QUESTION = "Who are our top 5 customers by revenue?"
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_as_analyst(app: FastAPI) -> None:
+    app.dependency_overrides[get_current_user] = lambda: make_user_read(role=UserRole.ANALYST)
 
 
 def _make_success_response() -> QueryMindResponse:

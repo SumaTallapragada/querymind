@@ -1,14 +1,25 @@
 """Unit tests for `GET /api/v1/health/metrics`. `MetricsCollectorDep` is mocked -- verifies
 the route returns `MetricsCollector.snapshot()` unchanged, and never resets/mutates it.
+
+Requires `ADMIN` (Phase 22B) -- `_authenticated_as_admin` below overrides `get_current_user`
+for every test in this file; see `test_diagnostics.py`'s identical fixture for why.
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from querymind.api.dependencies import get_metrics_collector
+from querymind.api.dependencies import get_current_user, get_metrics_collector
+from querymind.auth.models import UserRole
 from querymind.observability.metrics import InMemoryMetricsCollector
+from tests.api.conftest import make_user_read
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_as_admin(app: FastAPI) -> None:
+    app.dependency_overrides[get_current_user] = lambda: make_user_read(role=UserRole.ADMIN)
 
 
 async def test_returns_a_snapshot_of_recorded_metrics(app: FastAPI, client: AsyncClient) -> None:

@@ -1,17 +1,24 @@
 """Unit tests for `POST /api/v1/query/sql`. `QueryMindEngineDep` is mocked -- verifies the
 route calls `QueryMindEngine.ask_for_sql` (never `.ask`, since this endpoint must never
 execute SQL) and that a wrapped stage failure maps to the right HTTP status.
+
+Requires at least `ANALYST` (Phase 22B) -- `_authenticated_as_analyst` below overrides
+`get_current_user` for every test in this file; see `test_diagnostics.py`'s identical fixture
+for why.
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from querymind.api.dependencies import get_query_mind_engine
+from querymind.api.dependencies import get_current_user, get_query_mind_engine
+from querymind.auth.models import UserRole
 from querymind.nlu import EmptyQuestionError
 from querymind.orchestrator.exceptions import PipelineExecutionError
 from querymind.orchestrator.models import GeneratedSqlResult, PipelineStage
+from tests.api.conftest import make_user_read
 from tests.orchestrator.conftest import (
     make_generated_sql,
     make_generated_sql_result,
@@ -19,6 +26,11 @@ from tests.orchestrator.conftest import (
 )
 
 _QUESTION = "Who are our top 5 customers by revenue?"
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_as_analyst(app: FastAPI) -> None:
+    app.dependency_overrides[get_current_user] = lambda: make_user_read(role=UserRole.ANALYST)
 
 
 def _make_outcome() -> GeneratedSqlResult:

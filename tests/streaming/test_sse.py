@@ -2,6 +2,11 @@
 verify the route's own, and only, responsibilities: validating the request body, streaming
 `text/event-stream` frames for whatever `stream_pipeline_events` yields, and reusing the same
 correlation ID `RequestContextMiddleware` already bound to this request.
+
+Requires at least `ANALYST` (Phase 22B) -- `_authenticated_as_analyst` below overrides
+`get_current_user` for every test in this file; see `tests/api/test_diagnostics.py`'s
+identical fixture for why. An ordinary HTTP route (unlike `/ws/query`), so overriding
+`get_current_user` works here the same way it does for every other now-protected route.
 """
 
 from __future__ import annotations
@@ -9,15 +14,23 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from querymind.api.dependencies import get_query_mind_engine
+from querymind.api.dependencies import get_current_user, get_query_mind_engine
+from querymind.auth.models import UserRole
 from querymind.orchestrator.models import PipelineStatus, QueryMindResponse
+from tests.api.conftest import make_user_read
 
 from .conftest import FakeQueryMindEngine, make_success_response
 
 _QUESTION = "Who are our top 5 customers by revenue?"
+
+
+@pytest.fixture(autouse=True)
+def _authenticated_as_analyst(app: FastAPI) -> None:
+    app.dependency_overrides[get_current_user] = lambda: make_user_read(role=UserRole.ANALYST)
 
 
 def _parse_sse_frames(raw_body: str) -> list[dict[str, Any]]:

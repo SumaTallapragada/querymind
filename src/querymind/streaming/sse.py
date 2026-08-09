@@ -6,6 +6,11 @@ the request body, resolve its dependencies, and delegate -- here, to
 `PipelineEvent` it yields as one SSE frame. No SQL generation,
 validation, repair, execution, or formatting happens in this module; see
 rule 1 of the Phase 17 spec.
+
+Requires at least `ANALYST` (Phase 22B) -- streams the exact same pipeline `POST /query` runs,
+protected the same way (`RequireAnalyst`, ranked -- `ADMIN` satisfies it too). An ordinary HTTP
+route, so `CurrentUser`'s `OAuth2PasswordBearer`-based extraction works unmodified here; see
+`querymind.streaming.websocket`'s own docstring for why `/ws/query` needs a different mechanism.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Request, status
 from fastapi.responses import StreamingResponse
 
-from querymind.api.dependencies import EventBusDep, LoggerDep, QueryMindEngineDep
+from querymind.api.dependencies import EventBusDep, LoggerDep, QueryMindEngineDep, RequireAnalyst
 from querymind.api.models.request import QuestionRequest
 from querymind.streaming.models import PipelineEvent
 from querymind.streaming.serializer import serialize_event
@@ -49,7 +54,8 @@ def _format_sse_frame(event: PipelineEvent) -> str:
         "`BusinessAnswer` -- while streaming `pipeline_started`, `stage_started`, "
         "`stage_completed`, `stage_failed`, `heartbeat` (periodically, once a run has taken a "
         "few seconds), and a final `pipeline_completed`/`pipeline_failed` event as they happen. "
-        "The final `pipeline_completed` event's payload carries the `BusinessAnswer`."
+        "The final `pipeline_completed` event's payload carries the `BusinessAnswer`. Requires "
+        "at least the `analyst` role."
     ),
     responses={
         200: {
@@ -71,6 +77,7 @@ async def stream_query(
     engine: QueryMindEngineDep,
     event_bus: EventBusDep,
     logger: LoggerDep,
+    _analyst: RequireAnalyst,
 ) -> StreamingResponse:
     correlation_id: str = (
         getattr(request.state, "correlation_id", None)
