@@ -1,0 +1,168 @@
+"""`AuthenticationService` -- the one place every authentication business rule lives.
+
+No FastAPI import, no HTTP concept (a status code, a header, a cookie) anywhere in this module
+-- Phase 22A Part 1 builds `querymind.auth` as a self-contained library, usable from a route, a
+CLI script, or a test with no web framework involved at all. Wiring this service into FastAPI
+(routes, an `OAuth2PasswordBearer` dependency, exception-to-status-code mapping) is Phase 22A
+Part 2's job.
+
+`AuthenticationRepository` enforces nothing (see its own docstring); every decision --
+"is this username taken," "is this the right password," "is this refresh token still good" --
+is made exactly once, here, and nowhere else in `querymind.auth`.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from sqlalchemy.exc import IntegrityError
+
+from querymind.auth import jwt as jwt_module
+from querymind.auth.exceptions import (
+    DuplicateUserError,
+    InactiveUserError,
+    InvalidCredentialsError,
+    InvalidTokenError,
+    RefreshTokenRevokedError,
+    TokenExpiredError,
+)
+from querymind.auth.jwt import DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES, DEFAULT_ALGORITHM
+from querymind.auth.jwt import DEFAULT_REFRESH_TOKEN_EXPIRE_DAYS as _DEFAULT_REFRESH_DAYS
+from querymind.auth.models import RefreshToken
+from querymind.auth.passwords import hash_password, verify_password
+from querymind.auth.repository import AuthenticationRepository
+from querymind.auth.schemas import TokenPair, UserRead
+
+
+class AuthenticationService:
+    """Registration, login, and refresh-token lifecycle. Constructor-injected throughout --
+    holds a repository and the JWT configuration it needs, nothing global, nothing cached.
+    """
+
+    def __init__(
+        self,
+        repository: AuthenticationRepository,
+        *,
+        jwt_secret_key: str,
+        jwt_algorithm: str = DEFAULT_ALGORITHM,
+        access_token_expire_minutes: int = DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES,
+        refresh_token_expire_days: int = _DEFAULT_REFRESH_DAYS,
+    ) -> None:
+        self._repository = repository
+        self._jwt_secret_key = jwt_secret_key
+        self._jwt_algorithm = jwt_algorithm
+        self._access_token_expire_minutes = access_token_expire_minutes
+        self._refresh_token_expire_days = refresh_token_expire_days
+
+    async def register_user(self, *, username: str, email: str, password: str) -> UserRead:
+        """Create a new account. Raises `DuplicateUserError` if `username`/`email` is taken.
+
+        Checked twice, deliberately: a pre-check query gives a clean, immediate error for the
+        overwhelmingly common case (someone just registering with a name that's already in
+        use), while the `IntegrityError` catch around the actual insert is what makes this
+        correct even under a genuine race (two concurrent registrations for the same username) --
+        the pre-check alone cannot close that window, only the database's own unique constraint can.
+        """
+        existing = await self._repository.get_by_username(
+            username
+        ) or await self._repository.get_by_email(email)
+        if existing is not None:
+            raise DuplicateUserError(f"Username {username!r} or email {email!r} is already taken.")
+
+        password_hash = hash_password(password)
+        try:
+            user = await self._repository.create_user(
+                username=username, email=email, password_hash=password_hash
+            )
+        except IntegrityError as exc:
+            raise DuplicateUserError(
+                f"Username {username!r} or email {email!r} is already taken."
+            ) from exc
+        return UserRead.model_validate(user)
+
+    async def authenticate(self, username: str, password: str) -> UserRead:
+        """Verify credentials and return the matching user. `username` may be either a username
+        or an email (matching `UserLogin`'s own field).
+
+        Raises `InvalidCredentialsError` for both "no such user" and "wrong password" -- see
+        that exception's own docstring for why the two must never be distinguishable to a
+        caller. Raises `InactiveUserError` only once the password has already been confirmed
+        correct -- an attacker who doesn't know the password learns nothing extra either way.
+        """
+        user = await self._repository.get_by_username(
+            username
+        ) or await self._repository.get_by_email(username)
+        if user is None or not verify_password(password, user.password_hash):
+            raise InvalidCredentialsError("Incorrect username/email or password.")
+        if not user.is_active:
+            raise InactiveUserError(f"The account {username!r} is inactive.")
+        return UserRead.model_validate(user)
+
+    async def create_token_pair(self, user_id: int) -> TokenPair:
+        """Issue a fresh access + refresh token pair for `user_id`, persisting the refresh
+        token's `jti`/`expires_at` so it can later be looked up and revoked.
+        """
+        subject = str(user_id)
+        access_token = jwt_module.create_access_token(
+            subject,
+            secret_key=self._jwt_secret_key,
+            algorithm=self._jwt_algorithm,
+            expire_minutes=self._access_token_expire_minutes,
+        )
+        refresh_token, claims = jwt_module.create_refresh_token(
+            subject,
+            secret_key=self._jwt_secret_key,
+            algorithm=self._jwt_algorithm,
+            expire_days=self._refresh_token_expire_days,
+        )
+        await self._repository.store_refresh_token(
+            user_id=user_id, jti=claims.jti, expires_at=claims.exp
+        )
+        return TokenPair(access_token=access_token, refresh_token=refresh_token)
+
+    async def validate_refresh_token(self, refresh_token: str) -> RefreshToken:
+        """Decode `refresh_token` and confirm it is still good: a `"refresh"`-type token, with
+        a `jti` this server actually issued (`InvalidTokenError` otherwise), not revoked
+        (`RefreshTokenRevokedError`), and not past the *stored* `expires_at`
+        (`TokenExpiredError` -- checked independently of the JWT's own `exp`, which
+        `jwt.validate_token` already checked; both are set to the same instant at issuance, so
+        this is defense in depth, not a second, different policy).
+
+        Returns the `RefreshToken` row itself -- `refresh_tokens`/`logout` both need its
+        `jti`/`user_id`, not just a bool.
+        """
+        claims = jwt_module.validate_token(
+            refresh_token,
+            secret_key=self._jwt_secret_key,
+            algorithm=self._jwt_algorithm,
+            expected_type="refresh",
+        )
+        row = await self._repository.get_refresh_token(claims.jti)
+        if row is None:
+            raise InvalidTokenError("This refresh token was not issued by this server.")
+        if row.revoked:
+            raise RefreshTokenRevokedError("This refresh token has already been used or revoked.")
+        if row.expires_at < datetime.now(UTC):
+            raise TokenExpiredError("This refresh token has expired.")
+        return row
+
+    async def refresh_tokens(self, refresh_token: str) -> TokenPair:
+        """Rotate `refresh_token` for a new access + refresh pair. The old refresh token is
+        revoked as part of this call (rotation) -- it can never be used again, whether or not
+        the new pair is ever used.
+        """
+        row = await self.validate_refresh_token(refresh_token)
+        user = await self._repository.get_by_id(row.user_id)
+        if user is None or not user.is_active:
+            raise InactiveUserError("The account for this refresh token is no longer active.")
+        await self._repository.revoke_refresh_token(row.jti)
+        return await self.create_token_pair(user.id)
+
+    async def logout(self, refresh_token: str) -> None:
+        """Revoke `refresh_token`. Does not, and cannot, invalidate any access token already
+        issued from it -- an access token is validated purely by signature and `exp`; it simply
+        expires on its own, within `access_token_expire_minutes` of being issued (see
+        `querymind.auth.cache`'s own docstring for why revoking one early is out of scope).
+        """
+        row = await self.validate_refresh_token(refresh_token)
+        await self._repository.revoke_refresh_token(row.jti)
