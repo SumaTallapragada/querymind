@@ -224,6 +224,18 @@ would have returned in its own `business_answer` field for the identical
 question — see the [README](README.md#streaming-sse--websockets) for the
 endpoint table and worked SSE/WebSocket examples.
 
+## How authentication relates to these models (Phase 22A)
+
+It doesn't, by design. `querymind.auth`'s models (`UserCreate`, `UserLogin`, `UserRead`,
+`TokenPair`, `RefreshRequest` — `querymind.auth.schemas`) never enter the pipeline above at all:
+nothing in `QueryContext -> ... -> QueryMindResponse` carries a user, and no pipeline model
+carries auth data either. Authentication is a parallel concern sitting in front of the same
+`/api/v1/*` routes, not another stage the question passes through — see
+[`ARCHITECTURE.md` §19](ARCHITECTURE.md#19-authentication-phase-22a) for how it's wired. The one
+place the two layers meet at all is `GET /api/v1/auth/me`, which returns a `UserRead` the exact
+same way every other route returns its own model: constructed by the engine (here,
+`AuthenticationService`) that owns it, serialized as-is.
+
 ## Why each phase exists
 
 **NLU exists** because turning free text into structured intent (what kind

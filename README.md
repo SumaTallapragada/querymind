@@ -192,6 +192,56 @@ traceback ever leaked to the client. Interactive OpenAPI docs (request/
 response examples, full schemas) are served at `/docs` once the app is
 running.
 
+## Authentication
+
+Phase 22A adds user accounts and JWT-based sessions, in two additive parts: Part 1 built
+`querymind.auth` as a self-contained library (user accounts, Argon2 password hashing, JWT
+access/refresh tokens) with no FastAPI dependency at all; Part 2 wired it into the same HTTP API
+described above, following the exact same "thin route, one engine call" pattern every other
+endpoint already uses. **No existing endpoint requires authentication yet** — `/auth/*` is
+purely additive, and there is no authorization/RBAC layer yet (see
+[Project roadmap](#project-roadmap)).
+
+| Method | Path | Calls | Returns |
+|---|---|---|---|
+| `POST` | `/auth/register` | `AuthenticationService.register_user` | `UserRead` (`201`) — `409` if the username/email is taken |
+| `POST` | `/auth/login` | `AuthenticationService.authenticate` + `.create_token_pair` | `TokenPair` (`200`) — `401`/`403` for bad credentials/an inactive account |
+| `POST` | `/auth/refresh` | `AuthenticationService.refresh_tokens` | `TokenPair` (`200`) — rotates the given refresh token, which is then revoked |
+| `POST` | `/auth/logout` | `AuthenticationService.logout` | `204`, no body — revokes the given refresh token only |
+| `GET` | `/auth/me` | `AuthenticationService.get_current_user` | `UserRead` (`200`) — requires `Authorization: Bearer <access_token>` |
+
+**JWT lifecycle:** `POST /auth/login` issues one access token (short-lived, default 30 minutes)
+and one refresh token (long-lived, default 14 days); every route that requires a caller's
+identity reads the access token from the `Authorization: Bearer <token>` header. When the
+access token expires, `POST /auth/refresh` exchanges the still-valid refresh token for a brand
+new pair — the old refresh token is revoked as part of that call (rotation), so it can never be
+reused, whether or not the new pair ever is. `POST /auth/logout` revokes a refresh token
+directly, ending that session; it does not, and cannot, invalidate an access token already
+issued from it, which simply expires on its own.
+
+Example — register, log in, and call the one protected route:
+
+```bash
+curl -X POST http://localhost:8000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username": "alice", "email": "alice@example.com", "password": "a-strong-password"}'
+
+curl -X POST http://localhost:8000/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "alice", "password": "a-strong-password"}'
+# {"access_token": "eyJ...", "refresh_token": "eyJ...", "token_type": "bearer"}
+
+curl http://localhost:8000/api/v1/auth/me \
+  -H "Authorization: Bearer eyJ..."
+# {"id": 1, "username": "alice", "email": "alice@example.com", "is_active": true, "is_superuser": false, ...}
+```
+
+Configure `JWT_SECRET_KEY` (required for production — the default is a clearly-labeled,
+insecure placeholder), `JWT_ALGORITHM` (default `HS256`), `ACCESS_TOKEN_EXPIRE_MINUTES`
+(default `30`), and `REFRESH_TOKEN_EXPIRE_DAYS` (default `14`) via `.env` — see
+`.env.example`. See [`ARCHITECTURE.md` §19](ARCHITECTURE.md#19-authentication-phase-22a) for
+how the library and the API layer are wired.
+
 ## Streaming (SSE & WebSockets)
 
 Phase 17 adds real-time progress over the same pipeline `POST /query`
@@ -494,14 +544,17 @@ text-to-SQL pipeline described above ending at an immutable
 [`VERSION_HISTORY.md`](VERSION_HISTORY.md) for the full narrative. Phase
 16 adds the FastAPI service layer described in [HTTP API](#http-api);
 Phase 17 adds the real-time streaming described in
-[Streaming](#streaming-sse--websockets).
+[Streaming](#streaming-sse--websockets); Phase 22A adds user accounts and
+JWT authentication, described in [Authentication](#authentication).
 
 Not yet implemented — explicitly deferred, phase by phase, throughout this
 project's history (see [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md)
 for the complete, current list):
 
 - CLI for interactive question-asking.
-- Authentication/authorization.
+- Authorization/RBAC, API keys, OAuth/SSO — Phase 22A adds authentication
+  (who a caller is) only; no existing endpoint requires it yet, and
+  nothing yet governs what an authenticated caller may do.
 - A frontend (React or otherwise).
 - Result visualization — charts, HTML tables, CSV/Excel export.
 - Result caching — every phase defines a cache `Protocol` and a

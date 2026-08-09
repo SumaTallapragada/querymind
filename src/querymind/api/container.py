@@ -29,9 +29,12 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 import querymind.models  # noqa: F401 -- populates Base.registry; must run before MetadataExtractor
+from querymind.auth.repository import AuthenticationRepository
+from querymind.auth.service import AuthenticationService
 from querymind.business_knowledge import BusinessKnowledgeRegistry
 from querymind.core.config import Settings
 from querymind.db.engine import create_engine
+from querymind.db.session import create_session_factory
 from querymind.llm.adapter import LLMAdapter
 from querymind.llm.client import HTTPTransport
 from querymind.llm.providers.claude import ClaudeProvider
@@ -83,6 +86,8 @@ class ApplicationContainer:
     metrics_collector: MetricsCollector
     logger: Logger
     event_bus: EventBus
+    authentication_repository: AuthenticationRepository
+    authentication_service: AuthenticationService
 
     @staticmethod
     def build(
@@ -165,6 +170,24 @@ class ApplicationContainer:
             connection_provider=connection_provider,
         )
 
+        # Phase 22A Part 2: `AuthenticationRepository` gets its own `session_factory`, built
+        # from the same `engine` (and therefore the same connection pool) as everything else in
+        # this container -- not the one `querymind.api.lifespan` separately builds onto
+        # `app.state.session_factory` for the pre-existing `/api/v1/health/ready` dependency,
+        # since that only exists *after* this container has already been returned. Two
+        # `async_sessionmaker`s over the same engine is not a real duplication of any resource
+        # (a session factory is a stateless, near-free wrapper); it just avoids the layering
+        # inversion of this container depending on something `lifespan` builds from it.
+        authentication_session_factory = create_session_factory(engine)
+        authentication_repository = AuthenticationRepository(authentication_session_factory)
+        authentication_service = AuthenticationService(
+            authentication_repository,
+            jwt_secret_key=settings.jwt_secret_key.get_secret_value(),
+            jwt_algorithm=settings.jwt_algorithm,
+            access_token_expire_minutes=settings.access_token_expire_minutes,
+            refresh_token_expire_days=settings.refresh_token_expire_days,
+        )
+
         return ApplicationContainer(
             settings=settings,
             engine=engine,
@@ -188,6 +211,8 @@ class ApplicationContainer:
             metrics_collector=InMemoryMetricsCollector(),
             logger=StructuredLogger(),
             event_bus=EventBus(),
+            authentication_repository=authentication_repository,
+            authentication_service=authentication_service,
         )
 
     async def dispose(self) -> None:

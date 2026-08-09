@@ -551,5 +551,68 @@ heartbeat and cancellation paths, driven by a scripted fake
 the real-pipeline-plus-`httpx.MockTransport` precedent against the
 actual FastAPI app, over both transports.
 
+## 19. Authentication (Phase 22A)
+
+`querymind.auth` adds user accounts, password hashing, and JWT-based sessions, in two additive
+parts: Part 1 built a self-contained authentication library with no FastAPI/HTTP awareness at
+all; Part 2 wired it into the existing `api` layer using the same patterns as every prior phase,
+without touching a single line of pipeline logic — `orchestrator`, `sql_generation`,
+`sql_validation`, `sql_repair`, `sql_execution`, and `streaming` are all untouched by this phase.
+
+- **Two declarative bases, deliberately.** `auth.models.User`/`RefreshToken` are declared on
+  their own `AuthBase` (`auth/models.py`'s own `DeclarativeBase`), never `models.base.Base` —
+  the one the whole Phase 2 business schema (`customers`, `orders`, ...) shares, and the one
+  `container.ApplicationContainer.build` feeds into `MetadataExtractor(Base.registry)` to build
+  the schema the NLU/schema-linking layer treats as "every table a natural-language question may
+  be answered against." Sharing `Base` would have silently made `users`/`refresh_tokens` (and
+  `password_hash`) visible to SQL generation — a real security defect, not just an architectural
+  inconsistency. The Alembic migration for both tables is hand-written for the same reason:
+  `alembic/env.py`'s `target_metadata` stays `Base.metadata` only, so autogenerate never sees
+  `AuthBase.metadata` either.
+- **`auth.service.AuthenticationService`** is the one place every authentication business rule
+  lives — `register_user`, `authenticate`, `create_token_pair`, `refresh_tokens`, `logout`,
+  `validate_refresh_token`, and (Part 2's one additive method) `get_current_user`. It holds an
+  `auth.repository.AuthenticationRepository` (persistence only, no decisions of its own — mirrors
+  [§6](#6-dependency-injection-strategy)'s "no business logic in a repository/provider" rule
+  every other phase's own connection/session layer already follows) and takes its JWT
+  configuration (`secret_key`, `algorithm`, expiry) as explicit constructor parameters rather
+  than reaching into `Settings` itself — `Settings` only exists as the one place those
+  parameters' *real* values come from in production (`container.ApplicationContainer.build`).
+- **Password hashing (`auth.passwords`)** always uses Argon2id for new hashes; `bcrypt`
+  verification is kept for any hash produced by it, so a hash-scheme upgrade never invalidates a
+  password hashed before the upgrade — the hash string's own prefix says which algorithm
+  produced it.
+- **JWT (`auth.jwt`)** issues/decodes access and refresh tokens with `sub`/`jti`/`iat`/`exp`/
+  `type` claims — `type` is the one non-registered claim, so a refresh token can never be
+  silently accepted where an access token is required, or vice versa
+  (`validate_token(..., expected_type=...)`). A refresh token's `jti`/`expires_at` are persisted
+  (`RefreshToken`); an access token's are not — it is validated purely by signature and `exp`,
+  which is also why revoking one before it naturally expires is out of scope (see `auth.cache`'s
+  own "protocol defined, deliberately not wired up" precedent, matching every other phase's own
+  `cache.py`).
+- **The API layer (Phase 22A Part 2) adds nothing new to how routes are built.**
+  `api.routers.auth` follows [§17](#17-http-presentation-layer-phase-16)'s own rule exactly:
+  validate the request body, call one service method, return its result — every
+  `auth.exceptions.AuthenticationError` subclass the service can raise is mapped to an HTTP
+  status by the same `exception_handlers` lookup table every other phase's exceptions already go
+  through, so no route catches one itself. Request/response bodies reuse `auth.schemas` directly
+  (`UserCreate`, `UserLogin`, `UserRead`, `TokenPair`, `RefreshRequest`) — no parallel
+  `api.models.auth` DTOs, following [§17](#17-http-presentation-layer-phase-16)'s "the engine
+  layer's models are the API's models" precedent.
+- **`CurrentUser`/`OptionalUser`/`RequireAdminUser` (`api.dependencies`)** extract a bearer
+  token via `fastapi.security.OAuth2PasswordBearer` and delegate entirely to
+  `AuthenticationService.get_current_user` — no JWT logic of their own. `RequireAdminUser`
+  checks `User.is_superuser`, the closest thing to a "role" that exists yet; there is no
+  roles/permissions system through Phase 22A. No existing route was changed to require
+  authentication — `CurrentUser` backs only the new `GET /auth/me`, deliberately, per this
+  phase's own scope.
+
+Every layer above is tested the same way every prior phase's own layers are: `tests/auth`'s unit
+tests (a hand-written in-memory fake repository, no I/O) plus `tests/auth/test_repository.py`/
+`test_integration.py` (the real database) for the library itself; `tests/api/test_auth.py`'s
+unit tests (a hand-written fake `AuthenticationService`, mirroring `tests/api/test_query.py`'s
+own `_FakeEngine`) plus `tests/api/test_auth_integration.py` (the real database, through real
+HTTP) for the API layer.
+
 See [`SYSTEM_DESIGN.md`](SYSTEM_DESIGN.md) for the complete model-by-model
 walkthrough of what flows between every stage.

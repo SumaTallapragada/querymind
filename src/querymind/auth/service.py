@@ -166,3 +166,31 @@ class AuthenticationService:
         """
         row = await self.validate_refresh_token(refresh_token)
         await self._repository.revoke_refresh_token(row.jti)
+
+    async def get_current_user(self, access_token: str) -> UserRead:
+        """Resolve the authenticated user from a raw access token.
+
+        Added in Phase 22A Part 2, purely additively -- no existing method above changed. Part
+        2's FastAPI integration needs exactly this ("no duplicated JWT logic, everything
+        delegates to `AuthenticationService`"), and Part 1 had no equivalent: `validate_refresh_token`
+        decodes a *refresh* token and returns the stored `RefreshToken` row; this decodes an
+        *access* token (which has no stored row at all -- see `create_token_pair`'s own
+        docstring) and resolves straight to the user it names.
+
+        Raises `InvalidTokenError`/`TokenExpiredError` for a bad, wrong-type, or expired token,
+        or `InactiveUserError` if the account has since been deactivated. Never
+        `InvalidCredentialsError` -- that exception means "a login attempt's password was
+        wrong," a different failure from "this already-issued token no longer resolves."
+        """
+        claims = jwt_module.validate_token(
+            access_token,
+            secret_key=self._jwt_secret_key,
+            algorithm=self._jwt_algorithm,
+            expected_type="access",
+        )
+        user = await self._repository.get_by_id(int(claims.sub))
+        if user is None:
+            raise InvalidTokenError("This token's subject no longer exists.")
+        if not user.is_active:
+            raise InactiveUserError("This account is no longer active.")
+        return UserRead.model_validate(user)

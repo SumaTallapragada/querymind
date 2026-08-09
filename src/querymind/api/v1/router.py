@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from querymind.api.routers import (
+    auth,
     diagnostics,
     execution,
     formatting,
@@ -38,6 +39,7 @@ api_router.include_router(full_health.router)
 api_router.include_router(diagnostics.router)
 api_router.include_router(metrics.router)
 api_router.include_router(settings.router)
+api_router.include_router(auth.router)
 # `POST /query/stream` (Phase 17) joins the rest of the `/query/*` family here, under
 # `/api/v1`; `/ws/query` (`querymind.streaming.websocket`) is mounted directly on the app in
 # `querymind.api.app`, unversioned, matching the spec's literal `/ws/query` path.

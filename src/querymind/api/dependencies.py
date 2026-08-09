@@ -33,6 +33,17 @@ silently see whichever `Settings` happened to be constructed first,
 never necessarily the one its own app was actually built from -- found
 via `GET /settings` (Phase 18) returning the real `.env`'s database name
 instead of a test's hermetic one.
+
+`CurrentUser`/`OptionalUser`/`RequireAdminUser` (Phase 22A Part 2) resolve a bearer token
+against `AuthenticationService.get_current_user` -- the one call site for "what does this
+token mean," matching this whole module's own rule that nothing here re-derives what an
+already-built collaborator already knows how to do. Neither of them catches
+`querymind.auth.exceptions.AuthenticationError` itself: it propagates to the same
+mapped-exception machinery every other engine's exceptions already go through
+(`querymind.api.exception_handlers`), so a bad/expired/revoked token becomes a `401` (or a
+deactivated account a `403`) with no special-casing here -- the only thing genuinely unique
+to *this* dependency is that "no token at all" isn't an exception from anything, so that one
+case is still raised directly, as an `HTTPException`.
 """
 
 from __future__ import annotations
@@ -40,11 +51,14 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import HTTPConnection
 
 from querymind.api.container import ApplicationContainer
+from querymind.auth.schemas import UserRead
+from querymind.auth.service import AuthenticationService
 from querymind.core.config import Settings
 from querymind.db.session import transactional_session
 from querymind.observability.diagnostics import DiagnosticsEngine
@@ -135,3 +149,87 @@ DiagnosticsEngineDep = Annotated[DiagnosticsEngine, Depends(get_diagnostics_engi
 MetricsCollectorDep = Annotated[MetricsCollector, Depends(get_metrics_collector)]
 LoggerDep = Annotated[Logger, Depends(get_logger)]
 EventBusDep = Annotated[EventBus, Depends(get_event_bus)]
+
+
+def get_authentication_service(container: ContainerDep) -> AuthenticationService:
+    return container.authentication_service
+
+
+AuthenticationServiceDep = Annotated[AuthenticationService, Depends(get_authentication_service)]
+
+
+# `auto_error=False`: a missing/malformed `Authorization` header becomes `None`, not an
+# automatic 401 -- `OptionalUser` needs that to mean "anonymous," and `CurrentUser`/
+# `get_current_user` below raises its own, explicit 401 for the same case, with the same
+# `WWW-Authenticate` header a `True` scheme would have added automatically. `tokenUrl` is
+# OpenAPI metadata only (what Swagger's docs point at as "get a token here") -- `POST
+# /auth/login` (`querymind.api.routers.auth`) accepts a JSON body, not the OAuth2 password
+# flow's form-encoded one, matching every other endpoint in this API; using
+# `OAuth2PasswordBearer` is about standardized *bearer-token extraction*, not adopting the
+# full OAuth2 password-grant request shape for login itself.
+_oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login", auto_error=False)
+
+
+async def get_optional_current_user(
+    token: Annotated[str | None, Depends(_oauth2_scheme)],
+    auth_service: AuthenticationServiceDep,
+) -> UserRead | None:
+    """`None` if no bearer token was given at all (an anonymous request); otherwise delegates
+    to `get_current_user`'s same rules -- a token that *was* given but is bad/expired/revoked
+    still raises (mapped to `401`/`403` the same way), rather than silently degrading to
+    anonymous, since that's far more likely a caller bug worth surfacing than a legitimate
+    "not logged in."
+    """
+    if token is None:
+        return None
+    return await auth_service.get_current_user(token)
+
+
+OptionalUser = Annotated[UserRead | None, Depends(get_optional_current_user)]
+
+
+async def get_current_user(
+    token: Annotated[str | None, Depends(_oauth2_scheme)],
+    auth_service: AuthenticationServiceDep,
+) -> UserRead:
+    """The authenticated user, resolved from the `Authorization: Bearer <token>` header.
+
+    Raises `401` directly, here, only for "no token at all" -- every other failure
+    (bad/expired/wrong-type token, an account since deactivated) is
+    `AuthenticationService.get_current_user` raising a `querymind.auth.exceptions.AuthenticationError`
+    subclass, mapped to its HTTP status the same way every other engine's exceptions already
+    are (`querymind.api.exception_handlers`); this dependency does not catch it.
+    """
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return await auth_service.get_current_user(token)
+
+
+CurrentUser = Annotated[UserRead, Depends(get_current_user)]
+
+#: Same dependency as `CurrentUser`, under the name a route reaches for when the point is
+#: "this requires authentication" rather than "give me whoever's logged in" -- both resolve
+#: identically today; kept as its own name so Phase 22B (authorization) has a natural, already-
+#: adopted place to add a required-role parameter without every existing route's annotation
+#: needing to change.
+RequireAuthenticatedUser = CurrentUser
+
+
+async def get_admin_user(user: CurrentUser) -> UserRead:
+    """`CurrentUser`, plus asserting `is_superuser` -- the closest thing to a "role" that
+    already exists on `User` (Phase 22A Part 1); not a roles/permissions system (out of scope
+    through Phase 22A), just a direct check of a field that was already there.
+    """
+    if not user.is_superuser:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action requires administrator privileges.",
+        )
+    return user
+
+
+RequireAdminUser = Annotated[UserRead, Depends(get_admin_user)]

@@ -396,3 +396,73 @@ class TestLogout:
 
         claims = decode_token(tokens.access_token, secret_key=TEST_JWT_SECRET_KEY)
         assert claims.sub == str(user.id)
+
+
+class TestGetCurrentUser:
+    """Phase 22A Part 2 addition -- see `AuthenticationService.get_current_user`'s own docstring
+    for why this method exists (Part 1 had no equivalent for access tokens).
+    """
+
+    async def test_resolves_the_user_for_a_valid_access_token(
+        self, service: AuthenticationService
+    ) -> None:
+        registered = await service.register_user(
+            username="xena", email="xena@example.com", password="password123"
+        )
+        tokens = await service.create_token_pair(registered.id)
+
+        resolved = await service.get_current_user(tokens.access_token)
+
+        assert resolved.id == registered.id
+        assert resolved.username == "xena"
+
+    async def test_rejects_a_refresh_token_presented_as_access(
+        self, service: AuthenticationService
+    ) -> None:
+        user = await service.register_user(
+            username="yara", email="yara@example.com", password="password123"
+        )
+        tokens = await service.create_token_pair(user.id)
+
+        with pytest.raises(InvalidTokenError):
+            await service.get_current_user(tokens.refresh_token)
+
+    async def test_rejects_a_token_with_a_wrong_signature(
+        self, service: AuthenticationService
+    ) -> None:
+        foreign_token = create_access_token(
+            "999999", secret_key="a-completely-different-secret-of-sufficient-length"
+        )
+        with pytest.raises(InvalidTokenError):
+            await service.get_current_user(foreign_token)
+
+    async def test_rejects_a_token_whose_subject_no_longer_exists(
+        self, service: AuthenticationService
+    ) -> None:
+        never_registered_user_id = "424242"
+        token = create_access_token(never_registered_user_id, secret_key=TEST_JWT_SECRET_KEY)
+
+        with pytest.raises(InvalidTokenError):
+            await service.get_current_user(token)
+
+    async def test_rejects_a_token_for_a_now_inactive_user(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        user = await service.register_user(
+            username="zane", email="zane@example.com", password="password123"
+        )
+        tokens = await service.create_token_pair(user.id)
+        repository.users[user.id].is_active = False
+
+        with pytest.raises(InactiveUserError):
+            await service.get_current_user(tokens.access_token)
+
+    async def test_never_leaks_the_password_hash(self, service: AuthenticationService) -> None:
+        user = await service.register_user(
+            username="amos", email="amos@example.com", password="password123"
+        )
+        tokens = await service.create_token_pair(user.id)
+
+        resolved = await service.get_current_user(tokens.access_token)
+
+        assert not hasattr(resolved, "password_hash")

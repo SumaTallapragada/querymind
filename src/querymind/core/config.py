@@ -94,6 +94,26 @@ class Settings(BaseSettings):
     llm_retry_count: int = Field(default=DEFAULT_RETRY_COUNT, ge=0)
     llm_base_url: str = Field(default=DEFAULT_CLAUDE_BASE_URL)
 
+    # -- Authentication (Phase 22A Part 2) ------------------------------------
+    # `jwt_secret_key` defaults to a clearly-labeled placeholder rather than being required --
+    # mirrors `llm_api_key`'s own precedent (a missing *real* secret is a deployment-readiness
+    # concern, not something that should stop the whole application, including every
+    # non-auth endpoint, from starting at all). The default is long enough (>32 bytes) to stay
+    # above PyJWT's minimum recommended HMAC key length for HS256 -- a shorter one triggers
+    # `InsecureKeyLengthWarning`, which this project's `filterwarnings = ["error"]`
+    # (pyproject.toml) turns into a hard failure the moment any token is issued.
+    # `querymind.auth` itself never reads these -- every function/constructor in that package
+    # takes its configuration as explicit parameters (see its own module docstrings); this is
+    # the one place those parameters' real values come from in production.
+    jwt_secret_key: SecretStr = Field(
+        default=SecretStr(
+            "insecure-default-change-in-production-please-set-a-real-JWT_SECRET_KEY-env-var"
+        )
+    )
+    jwt_algorithm: str = Field(default="HS256")
+    access_token_expire_minutes: int = Field(default=30, gt=0)
+    refresh_token_expire_days: int = Field(default=14, gt=0)
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
