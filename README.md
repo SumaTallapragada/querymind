@@ -391,6 +391,7 @@ blocks):
 LLM_PROVIDER=claude   # or: groq
 LLM_MODEL=claude-sonnet-5   # a model id valid for whichever provider LLM_PROVIDER selects
 LLM_API_KEY=          # that provider's real API key -- never hardcoded, never logged
+LLM_TEMPERATURE=0.0   # 0.0-2.0; provider-agnostic range, not clamped to Claude's own 0.0-1.0
 # LLM_BASE_URL=       # optional; each provider has its own correct default when left unset
 ```
 
@@ -401,6 +402,11 @@ logic), so switching providers never means also remembering to update the base U
 `LLM_API_KEY` defaults to empty, which the pipeline treats as "not configured" (surfaced by
 `GET /health/diagnostics`'s `llm_configuration` check) rather than a startup failure — an
 application with no LLM key configured can still serve every non-generation route.
+`LLM_TEMPERATURE` accepts `0.0`-`2.0` regardless of provider — the field itself
+(`LLMProviderConfig.temperature`/`LLMRequest.temperature`) doesn't know which provider it's for,
+so it allows the full range some OpenAI-compatible APIs (Groq included) support above Claude's
+own effective `0.0`-`1.0`; Claude will reject an out-of-its-range value with its own API error,
+not a QueryMind-side validation error.
 
 Adding a third provider means adding one new sibling module under `querymind.llm.providers`
 (implementing the same `ProviderClient`/`ResponseParser` contracts) and one new entry in
