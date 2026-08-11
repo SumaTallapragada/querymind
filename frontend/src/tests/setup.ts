@@ -7,6 +7,9 @@ beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
 afterEach(() => {
   server.resetHandlers();
   cleanup();
+  // `authStore`'s `persist` middleware writes `refreshToken` here; without this, a session
+  // "persisted" by one test would leak into the next test file's initial render.
+  localStorage.clear();
 });
 afterAll(() => server.close());
 

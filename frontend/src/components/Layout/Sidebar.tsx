@@ -2,19 +2,29 @@ import { NavLink } from "react-router-dom";
 import { BarChart3, HeartPulse, LayoutDashboard, Settings, Stethoscope, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useUiStore } from "@/store/uiStore";
+import { useAuthStore } from "@/store/authStore";
+import { roleSatisfies } from "@/utils/roles";
 import { Button } from "@/components/ui";
+import type { UserRole } from "@/models";
 
+/** `minRole` mirrors the backend RBAC table (README §Authorization) -- kept in sync by hand
+ * since the frontend has no way to derive it from the API itself; a mismatch here is only ever
+ * a UX inconvenience (an item shown that 403s, or hidden when it wouldn't have), never a
+ * security gap, since the backend enforces its own floor regardless of what's rendered here.
+ */
 const NAV_ITEMS = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
-  { to: "/diagnostics", label: "Diagnostics", icon: Stethoscope, end: false },
-  { to: "/health", label: "Health", icon: HeartPulse, end: false },
-  { to: "/metrics", label: "Metrics", icon: BarChart3, end: false },
-  { to: "/settings", label: "Settings", icon: Settings, end: false },
+  { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true, minRole: "analyst" as UserRole },
+  { to: "/diagnostics", label: "Diagnostics", icon: Stethoscope, end: false, minRole: "admin" as UserRole },
+  { to: "/health", label: "Health", icon: HeartPulse, end: false, minRole: "viewer" as UserRole },
+  { to: "/metrics", label: "Metrics", icon: BarChart3, end: false, minRole: "admin" as UserRole },
+  { to: "/settings", label: "Settings", icon: Settings, end: false, minRole: "admin" as UserRole },
 ] as const;
 
 export function Sidebar() {
   const sidebarOpen = useUiStore((state) => state.sidebarOpen);
   const setSidebarOpen = useUiStore((state) => state.setSidebarOpen);
+  const role = useAuthStore((state) => state.user?.role);
+  const visibleNavItems = NAV_ITEMS.filter((item) => role && roleSatisfies(role, item.minRole));
 
   return (
     <>
@@ -45,7 +55,7 @@ export function Sidebar() {
           </Button>
         </div>
         <nav className="flex-1 space-y-1 p-3">
-          {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
+          {visibleNavItems.map(({ to, label, icon: Icon, end }) => (
             <NavLink
               key={to}
               to={to}

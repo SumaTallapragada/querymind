@@ -15,6 +15,8 @@ import {
   sqlExecutionResultFixture,
   sqlRepairResultFixture,
   sqlValidationResultFixture,
+  tokenPairFixture,
+  userReadFixture,
 } from "./fixtures";
 
 const BASE = "/api/v1";
@@ -49,4 +51,12 @@ export const handlers = [
   http.get(`${BASE}/health/metrics`, () => HttpResponse.json(metricsSnapshotFixture)),
 
   http.get(`${BASE}/settings`, () => HttpResponse.json(settingsResponseFixture)),
+
+  http.post(`${BASE}/auth/login`, () => HttpResponse.json(tokenPairFixture)),
+
+  http.post(`${BASE}/auth/refresh`, () => HttpResponse.json(tokenPairFixture)),
+
+  http.post(`${BASE}/auth/logout`, () => new HttpResponse(null, { status: 204 })),
+
+  http.get(`${BASE}/auth/me`, () => HttpResponse.json(userReadFixture)),
 ];

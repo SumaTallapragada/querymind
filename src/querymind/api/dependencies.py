@@ -45,6 +45,12 @@ deactivated account a `403`) with no special-casing here -- the only thing genui
 to *this* dependency is that "no token at all" isn't an exception from anything, so that one
 case is still raised directly, as an `HTTPException`.
 
+`CurrentUser` (Phase 22D) additionally resolves an `X-API-Key` header via
+`AuthenticationService.authenticate_api_key`, converging onto the same `UserRead` a JWT would --
+every `Require*` dependency below is therefore already API-key-aware with no changes of its own.
+`CurrentUserJwtOnly` is the one deliberate exception: the `/auth/api-keys*` management routes use
+it instead of `CurrentUser` specifically so an API key can never be used to manage API keys.
+
 `RequireAdmin`/`RequireAnalyst`/`RequireViewer`/`RequireAnyRole` (Phase 22B) are the
 authorization counterpart: every one of them takes `CurrentUser` (never re-extracts or
 re-decodes a token of its own) and calls one of `AuthenticationService.require_role`/
@@ -60,11 +66,13 @@ from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
 from fastapi import Depends, HTTPException, Request, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import APIKeyHeader, OAuth2PasswordBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import HTTPConnection
 
+from querymind.api.client_info import get_attempted_username, get_client_ip, get_user_agent
 from querymind.api.container import ApplicationContainer
+from querymind.auth.exceptions import AuthenticationError
 from querymind.auth.models import UserRole
 from querymind.auth.schemas import UserRead
 from querymind.auth.service import AuthenticationService
@@ -76,6 +84,9 @@ from querymind.observability.logger import Logger
 from querymind.observability.metrics import MetricsCollector
 from querymind.orchestrator import QueryMindEngine
 from querymind.result_formatter import ResultFormatterEngine
+from querymind.security.audit import AuditEventType, AuditLogger
+from querymind.security.exceptions import RateLimitExceededError
+from querymind.security.rate_limiter import RateLimitDecision, RateLimiter
 from querymind.sql_execution import SQLExecutionEngine
 from querymind.sql_validation import SQLValidationEngine
 from querymind.streaming.event_bus import EventBus
@@ -167,6 +178,20 @@ def get_authentication_service(container: ContainerDep) -> AuthenticationService
 AuthenticationServiceDep = Annotated[AuthenticationService, Depends(get_authentication_service)]
 
 
+def get_audit_logger(container: ContainerDep) -> AuditLogger:
+    return container.audit_logger
+
+
+AuditLoggerDep = Annotated[AuditLogger, Depends(get_audit_logger)]
+
+
+def get_rate_limiter(container: ContainerDep) -> RateLimiter:
+    return container.rate_limiter
+
+
+RateLimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
+
+
 # `auto_error=False`: a missing/malformed `Authorization` header becomes `None`, not an
 # automatic 401 -- `OptionalUser` needs that to mean "anonymous," and `CurrentUser`/
 # `get_current_user` below raises its own, explicit 401 for the same case, with the same
@@ -177,6 +202,12 @@ AuthenticationServiceDep = Annotated[AuthenticationService, Depends(get_authenti
 # `OAuth2PasswordBearer` is about standardized *bearer-token extraction*, not adopting the
 # full OAuth2 password-grant request shape for login itself.
 _oauth2_scheme = OAuth2PasswordBearer(tokenUrl="api/v1/auth/login", auto_error=False)
+
+# `auto_error=False` for the same reason as `_oauth2_scheme` above: a missing `X-API-Key`
+# header should mean "this caller is using a JWT instead," not an automatic 401 -- `get_current_
+# user` below decides what a *missing* credential means; this extractor only ever answers "was
+# this header present."
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 async def get_optional_current_user(
@@ -197,17 +228,16 @@ async def get_optional_current_user(
 OptionalUser = Annotated[UserRead | None, Depends(get_optional_current_user)]
 
 
-async def get_current_user(
-    token: Annotated[str | None, Depends(_oauth2_scheme)],
-    auth_service: AuthenticationServiceDep,
-) -> UserRead:
-    """The authenticated user, resolved from the `Authorization: Bearer <token>` header.
+async def _resolve_jwt_user(token: str | None, auth_service: AuthenticationService) -> UserRead:
+    """Bearer-JWT-only resolution -- the exact pre-Phase-22D `get_current_user` body, kept as
+    its own function so both `get_current_user` (dual credential) and `get_current_user_jwt_only`
+    (JWT-only, see below) share it rather than duplicating the "no token at all" check.
 
     Raises `401` directly, here, only for "no token at all" -- every other failure
     (bad/expired/wrong-type token, an account since deactivated) is
     `AuthenticationService.get_current_user` raising a `querymind.auth.exceptions.AuthenticationError`
     subclass, mapped to its HTTP status the same way every other engine's exceptions already
-    are (`querymind.api.exception_handlers`); this dependency does not catch it.
+    are (`querymind.api.exception_handlers`); this function does not catch it.
     """
     if token is None:
         raise HTTPException(
@@ -216,6 +246,88 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return await auth_service.get_current_user(token)
+
+
+async def get_current_user_jwt_only(
+    request: Request,
+    token: Annotated[str | None, Depends(_oauth2_scheme)],
+    auth_service: AuthenticationServiceDep,
+) -> UserRead:
+    """Bearer-JWT identity only -- never consults `X-API-Key` (Phase 22D). The one dependency
+    the `/auth/api-keys*` management routes use, so an API key can never be used to create,
+    list, or revoke API keys: that guarantee is structural (this function has no code path that
+    even looks at the header), not a convention a future route could accidentally violate.
+    """
+    user = await _resolve_jwt_user(token, auth_service)
+    request.state.user = user
+    return user
+
+
+CurrentUserJwtOnly = Annotated[UserRead, Depends(get_current_user_jwt_only)]
+
+
+async def get_current_user(
+    request: Request,
+    token: Annotated[str | None, Depends(_oauth2_scheme)],
+    api_key: Annotated[str | None, Depends(_api_key_header)],
+    auth_service: AuthenticationServiceDep,
+    audit_logger: AuditLoggerDep,
+) -> UserRead:
+    """The authenticated user, resolved from either an `Authorization: Bearer <token>` header
+    (the original, unchanged JWT path) or an `X-API-Key` header (Phase 22D) -- both resolve to
+    the same `UserRead`, so every `Require*` dependency built on top of `CurrentUser` below
+    (`RequireAdmin`/`RequireAnalyst`/`RequireViewer`/`RequireAnyRole`) needs no change at all to
+    accept either credential; none of them re-derives identity themselves, they only ever take
+    `CurrentUser` and check `.role`.
+
+    An API key takes precedence when both happen to be present (an unlikely caller mistake, not
+    a security decision -- there is no scenario where sending both is meaningful). Also stashes
+    the resolved user on `request.state.user`, giving `querymind.api.exception_handlers` a
+    reliable, already-established place to read "who is this" for audit-logging an authorization
+    denial (Phase 22D) without re-decoding a token/key a second time.
+
+    Every API-key-authenticated request is audited here (success or failure) -- this is the one
+    place both outcomes are known precisely, for *any* route a key might hit, not just the
+    `/auth/*` ones a route body could instrument itself. The JWT path is deliberately not
+    audited per-request the same way: login/refresh/logout already mark every JWT session
+    boundary (`querymind.api.routers.auth`), and auditing every single JWT-authenticated request
+    on top of that would be pure volume with no new security signal.
+    """
+    if api_key is not None:
+        try:
+            user = await auth_service.authenticate_api_key(api_key)
+        except AuthenticationError as exc:
+            await audit_logger.record(
+                AuditEventType.API_KEY_AUTH_FAILURE,
+                success=False,
+                ip_address=get_client_ip(request, trust_proxy_headers=_trust_proxy(request)),
+                user_agent=get_user_agent(request),
+                request_id=getattr(request.state, "request_id", None),
+                correlation_id=getattr(request.state, "correlation_id", None),
+                resource=request.url.path,
+                metadata={"error_type": type(exc).__name__},
+            )
+            raise
+        await audit_logger.record(
+            AuditEventType.API_KEY_AUTH_SUCCESS,
+            success=True,
+            actor_user_id=user.id,
+            actor_username=user.username,
+            ip_address=get_client_ip(request, trust_proxy_headers=_trust_proxy(request)),
+            user_agent=get_user_agent(request),
+            request_id=getattr(request.state, "request_id", None),
+            correlation_id=getattr(request.state, "correlation_id", None),
+            resource=request.url.path,
+        )
+    else:
+        user = await _resolve_jwt_user(token, auth_service)
+    request.state.user = user
+    return user
+
+
+def _trust_proxy(request: Request) -> bool:
+    settings: Settings = request.app.state.settings
+    return settings.trust_proxy_headers
 
 
 CurrentUser = Annotated[UserRead, Depends(get_current_user)]
@@ -307,3 +419,131 @@ def RequireAnyRole(*roles: UserRole) -> Any:  # noqa: N802 -- named like the dep
         return user
 
     return Depends(_check)
+
+
+# -- Rate limiting (Phase 22D) -------------------------------------------------------------
+#
+# Every dependency below does the same three things: build a bucket key from a scope name and
+# an identity, call `RateLimiterDep.check(...)` with the matching `Settings` limit, and raise
+# `RateLimitExceededError` if it's exhausted -- never a bespoke `JSONResponse` built inline (the
+# same "one central place maps an exception to a response" rule every other engine's exceptions
+# already follow, via `querymind.api.exception_handlers`). None of this touches `RequireAdmin`/
+# `RequireAnalyst`/`RequireViewer`/`RequireAnyRole` above at all -- rate limiting and RBAC are
+# independent, stackable dependencies, not a change to either.
+#
+# `check_query_rate_limit` takes `CurrentUser`, not `RequireAnalyst` -- FastAPI resolves a given
+# dependency callable at most once per request (`use_cache=True` by default), so a route that
+# also depends on `RequireAnalyst` (which itself depends on `CurrentUser`) does not re-run
+# `get_current_user` a second time, re-authenticate, or double-audit an API-key request; both
+# dependencies simply share the one already-resolved `UserRead`. This is also how an API-key-
+# authenticated caller reaches this limit at all: `CurrentUser` resolves a key to the same
+# `UserRead` a JWT would (see its own docstring), so `f"query:user:{user.id}"` is keyed on the
+# *owning* user either way -- no second identity system, exactly as the approved design requires.
+
+
+def _raise_if_blocked(decision: RateLimitDecision) -> None:
+    """Shared by every dependency below -- the one place a blocked `RateLimitDecision` becomes
+    `RateLimitExceededError`, so the message text and `retry_after_seconds` propagation only
+    exist once.
+    """
+    if not decision.allowed:
+        raise RateLimitExceededError(
+            "Too many requests. Please slow down and try again shortly.",
+            retry_after_seconds=decision.retry_after_seconds,
+        )
+
+
+async def check_general_rate_limit(
+    request: Request, limiter: RateLimiterDep, settings: SettingsDep
+) -> None:
+    """The one coarse, application-wide ceiling -- attached once, to the whole `api_router`
+    (`querymind.api.app`), not to any individual route. Every route under `/api/v1` is subject
+    to this even when a tighter, more specific limit also applies on top of it.
+    """
+    capacity = settings.rate_limit_general_per_minute
+    ip = get_client_ip(request, trust_proxy_headers=settings.trust_proxy_headers)
+    decision = await limiter.check(
+        f"general:ip:{ip}", capacity=capacity, refill_per_second=capacity / 60
+    )
+    _raise_if_blocked(decision)
+
+
+GeneralRateLimit = Annotated[None, Depends(check_general_rate_limit)]
+
+
+async def check_login_rate_limit(
+    request: Request, limiter: RateLimiterDep, settings: SettingsDep
+) -> None:
+    """Two independent buckets, both must have capacity: one per calling IP, one per *attempted*
+    username (read straight from the request body -- `UserLogin.username` accepts either a
+    username or an email; there is no separate `email` field to prefer, see that schema's own
+    docstring) -- so distributed credential stuffing against one account from many IPs is
+    throttled by the second bucket even though the first never fills up.
+    """
+    capacity = settings.rate_limit_login_per_minute
+    refill_per_second = capacity / 60
+    ip = get_client_ip(request, trust_proxy_headers=settings.trust_proxy_headers)
+    ip_decision = await limiter.check(
+        f"login:ip:{ip}", capacity=capacity, refill_per_second=refill_per_second
+    )
+    username = await get_attempted_username(request)
+    username_decision = None
+    if username:
+        username_decision = await limiter.check(
+            f"login:username:{username}", capacity=capacity, refill_per_second=refill_per_second
+        )
+    blocked = next(
+        (d for d in (ip_decision, username_decision) if d is not None and not d.allowed), None
+    )
+    if blocked is not None:
+        _raise_if_blocked(blocked)
+
+
+LoginRateLimit = Annotated[None, Depends(check_login_rate_limit)]
+
+
+async def check_register_rate_limit(
+    request: Request, limiter: RateLimiterDep, settings: SettingsDep
+) -> None:
+    capacity = settings.rate_limit_register_per_hour
+    ip = get_client_ip(request, trust_proxy_headers=settings.trust_proxy_headers)
+    decision = await limiter.check(
+        f"register:ip:{ip}", capacity=capacity, refill_per_second=capacity / 3600
+    )
+    _raise_if_blocked(decision)
+
+
+RegisterRateLimit = Annotated[None, Depends(check_register_rate_limit)]
+
+
+async def check_refresh_rate_limit(
+    request: Request, limiter: RateLimiterDep, settings: SettingsDep
+) -> None:
+    capacity = settings.rate_limit_refresh_per_minute
+    ip = get_client_ip(request, trust_proxy_headers=settings.trust_proxy_headers)
+    decision = await limiter.check(
+        f"refresh:ip:{ip}", capacity=capacity, refill_per_second=capacity / 60
+    )
+    _raise_if_blocked(decision)
+
+
+RefreshRateLimit = Annotated[None, Depends(check_refresh_rate_limit)]
+
+
+async def check_query_rate_limit(
+    user: CurrentUser, limiter: RateLimiterDep, settings: SettingsDep
+) -> None:
+    """Keyed on the authenticated user id -- shared by every `/query*` route and `/query/stream`
+    (`RateLimitQuery`) and, checked directly rather than via `Depends()`, by `/ws/query`
+    (`querymind.streaming.websocket`, which cannot use FastAPI dependencies on a WebSocket route
+    at all -- see that module's own docstring) so every surface that runs the same expensive
+    pipeline shares the exact same per-user bucket.
+    """
+    capacity = settings.rate_limit_query_per_minute
+    decision = await limiter.check(
+        f"query:user:{user.id}", capacity=capacity, refill_per_second=capacity / 60
+    )
+    _raise_if_blocked(decision)
+
+
+RateLimitQuery = Annotated[None, Depends(check_query_rate_limit)]

@@ -16,7 +16,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from querymind.api.dependencies import MetricsCollectorDep, QueryMindEngineDep, RequireAnalyst
+from querymind.api.dependencies import (
+    MetricsCollectorDep,
+    QueryMindEngineDep,
+    RateLimitQuery,
+    RequireAnalyst,
+)
 from querymind.api.models.request import QuestionRequest
 from querymind.observability.metrics import MetricsCollector
 from querymind.orchestrator.models import PipelineStatus, QueryMindResponse
@@ -82,6 +87,7 @@ async def ask_question(
     engine: QueryMindEngineDep,
     metrics_collector: MetricsCollectorDep,
     _analyst: RequireAnalyst,
+    _rate_limit: RateLimitQuery,
 ) -> QueryMindResponse:
     response = await engine.ask(request.question)
     _record_metrics(metrics_collector, response)

@@ -16,11 +16,11 @@ from collections.abc import AsyncIterator
 import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from querymind.api.app import create_app
-from querymind.auth.models import RefreshToken, User, UserRole
+from querymind.auth.models import ApiKey, RefreshToken, User, UserRole
 from querymind.core.config import Settings
 from querymind.db.engine import create_engine
 from querymind.db.session import create_session_factory
@@ -44,6 +44,7 @@ async def _clean_auth_tables(real_settings: Settings) -> AsyncIterator[None]:
     engine = create_engine(real_settings)
     session_factory: async_sessionmaker[AsyncSession] = create_session_factory(engine)
     async with session_factory() as session:
+        await session.execute(delete(ApiKey))
         await session.execute(delete(RefreshToken))
         await session.execute(delete(User))
         await session.commit()
@@ -289,3 +290,190 @@ class TestAuthorizationEndToEnd:
         )
 
         assert response.status_code != 403
+
+
+class TestApiKeyEndToEnd:
+    """register -> login -> create an API key -> use it (no JWT at all) against an ordinary
+    protected route and against the RBAC boundary -> revoke it -> the same key stops working --
+    against real Postgres and real HTTP, Phase 22D's full loop.
+    """
+
+    async def test_a_created_key_authenticates_and_inherits_the_owners_role(
+        self, real_client: AsyncClient
+    ) -> None:
+        await _register(real_client, "key_alice")
+        tokens = await _login(real_client, "key_alice")
+
+        create_response = await real_client.post(
+            "/api/v1/auth/api-keys",
+            json={"name": "CI pipeline"},
+            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        )
+        assert create_response.status_code == 201
+        body = create_response.json()
+        raw_key = body["raw_key"]
+        assert raw_key.startswith("qm_")
+
+        # No Authorization header at all -- the key alone authenticates.
+        me_response = await real_client.get("/api/v1/auth/me", headers={"X-API-Key": raw_key})
+        assert me_response.status_code == 200
+        assert me_response.json()["username"] == "key_alice"
+
+        # Default role is ANALYST -- satisfies an ANALYST-gated route...
+        analyst_response = await real_client.post(
+            "/api/v1/query/validate",
+            json={"sql": "SELECT 1;"},
+            headers={"X-API-Key": raw_key},
+        )
+        assert analyst_response.status_code == 200
+
+        # ...but not an ADMIN-only one, exactly like the owning user's JWT wouldn't either.
+        admin_response = await real_client.get("/api/v1/settings", headers={"X-API-Key": raw_key})
+        assert admin_response.status_code == 403
+
+    async def test_the_raw_key_is_never_persisted_only_its_hash(
+        self, real_client: AsyncClient, real_settings: Settings
+    ) -> None:
+        await _register(real_client, "key_bob")
+        tokens = await _login(real_client, "key_bob")
+
+        create_response = await real_client.post(
+            "/api/v1/auth/api-keys",
+            json={"name": "laptop"},
+            headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        )
+        raw_key = create_response.json()["raw_key"]
+
+        engine = create_engine(real_settings)
+        session_factory: async_sessionmaker[AsyncSession] = create_session_factory(engine)
+        async with session_factory() as session:
+            result = await session.execute(select(ApiKey))
+            rows = result.scalars().all()
+        await engine.dispose()
+
+        assert len(rows) == 1
+        assert rows[0].key_hash != raw_key
+        assert raw_key not in rows[0].key_hash
+
+    async def test_listing_never_returns_the_raw_key_or_a_hash(
+        self, real_client: AsyncClient
+    ) -> None:
+        await _register(real_client, "key_carol")
+        tokens = await _login(real_client, "key_carol")
+        auth_header = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+        create_response = await real_client.post(
+            "/api/v1/auth/api-keys", json={"name": "one"}, headers=auth_header
+        )
+        raw_key = create_response.json()["raw_key"]
+
+        list_response = await real_client.get("/api/v1/auth/api-keys", headers=auth_header)
+        assert list_response.status_code == 200
+        body = list_response.json()
+        assert "key_hash" not in str(body)
+        assert "raw_key" not in str(body)
+        assert raw_key not in str(body)
+        # `key_prefix` legitimately starts with "qm_" (display-only, see `ApiKey`'s own
+        # docstring) -- confirm it's genuinely just a short prefix, not the full secret.
+        assert len(body[0]["key_prefix"]) < len(raw_key)
+
+    async def test_a_revoked_key_stops_authenticating(self, real_client: AsyncClient) -> None:
+        await _register(real_client, "key_dave")
+        tokens = await _login(real_client, "key_dave")
+        auth_header = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+        create_response = await real_client.post(
+            "/api/v1/auth/api-keys", json={"name": "to revoke"}, headers=auth_header
+        )
+        body = create_response.json()
+        raw_key = body["raw_key"]
+        key_id = body["key"]["id"]
+
+        still_works = await real_client.get("/api/v1/auth/me", headers={"X-API-Key": raw_key})
+        assert still_works.status_code == 200
+
+        revoke_response = await real_client.delete(
+            f"/api/v1/auth/api-keys/{key_id}", headers=auth_header
+        )
+        assert revoke_response.status_code == 204
+
+        after_revoke = await real_client.get("/api/v1/auth/me", headers={"X-API-Key": raw_key})
+        assert after_revoke.status_code == 401
+
+    async def test_an_api_key_cannot_be_used_to_create_or_revoke_api_keys(
+        self, real_client: AsyncClient
+    ) -> None:
+        await _register(real_client, "key_erin")
+        tokens = await _login(real_client, "key_erin")
+        auth_header = {"Authorization": f"Bearer {tokens['access_token']}"}
+
+        create_response = await real_client.post(
+            "/api/v1/auth/api-keys", json={"name": "the only key"}, headers=auth_header
+        )
+        raw_key = create_response.json()["raw_key"]
+        key_id = create_response.json()["key"]["id"]
+
+        cannot_create = await real_client.post(
+            "/api/v1/auth/api-keys",
+            json={"name": "created by a key"},
+            headers={"X-API-Key": raw_key},
+        )
+        assert cannot_create.status_code == 401
+
+        cannot_list = await real_client.get("/api/v1/auth/api-keys", headers={"X-API-Key": raw_key})
+        assert cannot_list.status_code == 401
+
+        cannot_revoke = await real_client.delete(
+            f"/api/v1/auth/api-keys/{key_id}", headers={"X-API-Key": raw_key}
+        )
+        assert cannot_revoke.status_code == 401
+
+        # The key itself is still valid -- these were rejected by CurrentUserJwtOnly, not
+        # because the key stopped working.
+        still_works = await real_client.get("/api/v1/auth/me", headers={"X-API-Key": raw_key})
+        assert still_works.status_code == 200
+
+    async def test_a_non_owner_cannot_revoke_someone_elses_key(
+        self, real_client: AsyncClient
+    ) -> None:
+        await _register(real_client, "key_frank")
+        owner_tokens = await _login(real_client, "key_frank")
+        create_response = await real_client.post(
+            "/api/v1/auth/api-keys",
+            json={"name": "franks key"},
+            headers={"Authorization": f"Bearer {owner_tokens['access_token']}"},
+        )
+        key_id = create_response.json()["key"]["id"]
+
+        await _register(real_client, "key_gina")
+        stranger_tokens = await _login(real_client, "key_gina")
+
+        response = await real_client.delete(
+            f"/api/v1/auth/api-keys/{key_id}",
+            headers={"Authorization": f"Bearer {stranger_tokens['access_token']}"},
+        )
+
+        assert response.status_code == 404
+
+    async def test_an_admin_can_revoke_another_users_key(
+        self, real_client: AsyncClient, real_settings: Settings
+    ) -> None:
+        await _register(real_client, "key_owner")
+        owner_tokens = await _login(real_client, "key_owner")
+        create_response = await real_client.post(
+            "/api/v1/auth/api-keys",
+            json={"name": "owned key"},
+            headers={"Authorization": f"Bearer {owner_tokens['access_token']}"},
+        )
+        key_id = create_response.json()["key"]["id"]
+
+        await _register(real_client, "key_admin")
+        admin_tokens = await _login(real_client, "key_admin")
+        await _promote_to_admin(real_settings, "key_admin")
+
+        response = await real_client.delete(
+            f"/api/v1/auth/api-keys/{key_id}",
+            headers={"Authorization": f"Bearer {admin_tokens['access_token']}"},
+        )
+
+        assert response.status_code == 204

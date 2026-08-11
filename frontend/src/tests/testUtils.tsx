@@ -6,7 +6,13 @@
 import type { ReactElement, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, renderHook, type RenderHookOptions, type RenderOptions } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import {
+  createMemoryRouter,
+  MemoryRouter,
+  RouterProvider,
+  type InitialEntry,
+  type RouteObject,
+} from "react-router-dom";
 
 export function createTestQueryClient(): QueryClient {
   return new QueryClient({
@@ -35,4 +41,18 @@ export function renderHookWithProviders<Result, Props>(
   options?: Omit<RenderHookOptions<Props>, "wrapper">,
 ) {
   return renderHook(hook, { wrapper: Providers, ...options });
+}
+
+/** For tests that need real navigation behavior (redirects, `location.state`) rather than the
+ * static `MemoryRouter` `renderWithProviders` sets up -- route guards (`RequireAuth`,
+ * `RequireRole`) and `LoginPage`'s "already authenticated" redirect both depend on that.
+ */
+export function renderWithRouter(routes: RouteObject[], options?: { initialEntries?: InitialEntry[] }) {
+  const client = createTestQueryClient();
+  const router = createMemoryRouter(routes, { initialEntries: options?.initialEntries ?? ["/"] });
+  return render(
+    <QueryClientProvider client={client}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  );
 }

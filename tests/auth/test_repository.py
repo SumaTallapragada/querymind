@@ -16,7 +16,7 @@ from sqlalchemy import delete, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from querymind.auth.models import RefreshToken, User, UserRole
+from querymind.auth.models import ApiKey, RefreshToken, User, UserRole
 from querymind.auth.repository import AuthenticationRepository
 
 
@@ -30,6 +30,7 @@ async def _clean_auth_tables(
     """
     yield
     async with session_factory() as session:
+        await session.execute(delete(ApiKey))
         await session.execute(delete(RefreshToken))
         await session.execute(delete(User))
         await session.commit()
@@ -255,3 +256,153 @@ class TestRefreshTokenLifecycle:
             await session.commit()
 
         assert await repository.get_refresh_token("jti-cascade") is None
+
+
+class TestApiKeyLifecycle:
+    async def test_create_and_get_by_hash_round_trips(
+        self, repository: AuthenticationRepository
+    ) -> None:
+        user = await repository.create_user(
+            username="liam", email="liam@example.com", password_hash="hash"
+        )
+
+        created = await repository.create_api_key(
+            user_id=user.id,
+            key_prefix="qm_abcd1234",
+            key_hash="a" * 64,
+            name="CI pipeline",
+            expires_at=None,
+        )
+        assert created.id is not None
+        assert created.revoked_at is None
+        assert created.last_used_at is None
+
+        fetched = await repository.get_api_key_by_hash("a" * 64)
+        assert fetched is not None
+        assert fetched.id == created.id
+        assert fetched.user_id == user.id
+        assert fetched.name == "CI pipeline"
+
+    async def test_get_api_key_by_hash_returns_none_when_not_found(
+        self, repository: AuthenticationRepository
+    ) -> None:
+        assert await repository.get_api_key_by_hash("never-issued-hash") is None
+
+    async def test_get_api_key_by_id_returns_none_when_not_found(
+        self, repository: AuthenticationRepository
+    ) -> None:
+        assert await repository.get_api_key_by_id(999_999_999) is None
+
+    async def test_list_api_keys_for_user_orders_most_recent_first(
+        self, repository: AuthenticationRepository
+    ) -> None:
+        user = await repository.create_user(
+            username="mia", email="mia@example.com", password_hash="hash"
+        )
+        first = await repository.create_api_key(
+            user_id=user.id,
+            key_prefix="qm_first111",
+            key_hash="b" * 64,
+            name="first",
+            expires_at=None,
+        )
+        second = await repository.create_api_key(
+            user_id=user.id,
+            key_prefix="qm_second22",
+            key_hash="c" * 64,
+            name="second",
+            expires_at=None,
+        )
+
+        keys = await repository.list_api_keys_for_user(user.id)
+
+        assert [key.id for key in keys] == [second.id, first.id]
+
+    async def test_list_api_keys_never_returns_another_users_keys(
+        self, repository: AuthenticationRepository
+    ) -> None:
+        owner = await repository.create_user(
+            username="noah", email="noah@example.com", password_hash="hash"
+        )
+        other = await repository.create_user(
+            username="olive", email="olive@example.com", password_hash="hash"
+        )
+        await repository.create_api_key(
+            user_id=other.id,
+            key_prefix="qm_other111",
+            key_hash="d" * 64,
+            name="not mine",
+            expires_at=None,
+        )
+
+        assert await repository.list_api_keys_for_user(owner.id) == []
+
+    async def test_revoke_api_key_sets_revoked_at(
+        self, repository: AuthenticationRepository
+    ) -> None:
+        user = await repository.create_user(
+            username="paul", email="paul@example.com", password_hash="hash"
+        )
+        created = await repository.create_api_key(
+            user_id=user.id,
+            key_prefix="qm_revoke11",
+            key_hash="e" * 64,
+            name="to revoke",
+            expires_at=None,
+        )
+
+        await repository.revoke_api_key(created.id)
+
+        fetched = await repository.get_api_key_by_id(created.id)
+        assert fetched is not None
+        assert fetched.revoked_at is not None
+
+    async def test_revoke_api_key_is_a_no_op_for_an_unknown_id(
+        self, repository: AuthenticationRepository
+    ) -> None:
+        await repository.revoke_api_key(999_999_999)  # must not raise
+
+    async def test_touch_api_key_last_used_sets_the_timestamp(
+        self, repository: AuthenticationRepository
+    ) -> None:
+        user = await repository.create_user(
+            username="quinn", email="quinn@example.com", password_hash="hash"
+        )
+        created = await repository.create_api_key(
+            user_id=user.id,
+            key_prefix="qm_touch111",
+            key_hash="f" * 64,
+            name="touched",
+            expires_at=None,
+        )
+        assert created.last_used_at is None
+
+        await repository.touch_api_key_last_used(created.id)
+
+        fetched = await repository.get_api_key_by_id(created.id)
+        assert fetched is not None
+        assert fetched.last_used_at is not None
+
+    async def test_cascade_deletes_api_keys_when_the_user_is_deleted(
+        self,
+        repository: AuthenticationRepository,
+        session_factory: async_sessionmaker[AsyncSession],
+    ) -> None:
+        user = await repository.create_user(
+            username="ruth", email="ruth@example.com", password_hash="hash"
+        )
+        created = await repository.create_api_key(
+            user_id=user.id,
+            key_prefix="qm_cascade1",
+            key_hash="0" * 64,
+            name="cascade",
+            expires_at=None,
+        )
+
+        async with session_factory() as session:
+            db_user = await session.get(User, user.id)
+            assert db_user is not None
+            await session.delete(db_user)
+            await session.commit()
+
+        assert await repository.get_api_key_by_id(created.id) is None

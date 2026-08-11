@@ -62,7 +62,10 @@ docker compose down            # one-command shutdown; add -v to also delete the
 Once healthy, the whole application is reachable at `http://localhost:${FRONTEND_PORT:-8080}/`
 -- the frontend serves the SPA and transparently proxies `/api/*`, the SSE endpoint, and
 `/ws/*` to `app`, so nothing in the browser needs to know the backend exists on a different
-port (or in a different container) at all.
+port (or in a different container) at all. As of Phase 22D-6, this is the *only* host-reachable
+path to the backend -- `app` publishes no host port of its own (see "What's new" below); it's
+reachable only from other containers on the `querymind` network (`app:8000`, which `frontend`
+already reaches this way) and from inside its own container.
 
 ### What's new vs. the Phase 19A images alone
 
@@ -77,27 +80,57 @@ port (or in a different container) at all.
   `app:8000` through a Docker-DNS-resolved variable rather than a literal hostname (see the
   comment at the top of `nginx.conf` for why: a literal, unresolvable `proxy_pass` target
   would prevent nginx from starting at all, not just fail that one route).
+- **`app` has no `ports:` mapping (Phase 22D-6)**: earlier revisions of this stack published
+  `${APP_PORT:-8000}:${APP_PORT:-8000}`, so the backend was reachable two ways at once --
+  directly on the host *and* through the frontend proxy -- with genuinely different client-IP
+  behavior depending on which path a caller used (direct access saw the real peer IP; proxied
+  access saw nginx's own container IP unless `TRUST_PROXY_HEADERS` were enabled, which wasn't
+  safe to do while the direct path could still forge those headers). `app` now uses `expose:`
+  instead, which documents the container port for other services without publishing it to the
+  host at all -- Compose's own DNS-based service discovery (`app:8000`) never needed `expose` to
+  work in the first place, so this is a pure hardening move with no functional loss: nginx
+  (`frontend`) is the one and only externally reachable entry point, matching a real deployment
+  where a reverse proxy -- not the application server -- terminates the connection.
 
 ### Verifying the stack
 
+Every route below requires at least the `analyst` role (Phase 22B) -- register/log in once to
+get a real `$ACCESS_TOKEN` (Phase 22D-7 -- `/query`/`/health`/`/query/stream` all need one; a
+placeholder like this, never a real token, belongs in docs):
+
 ```bash
+# One-time: create an account (a fresh registration defaults to `analyst`) and log in
+curl -X POST http://localhost:${FRONTEND_PORT:-8080}/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username": "demo", "email": "demo@example.com", "password": "a-strong-password1"}'
+ACCESS_TOKEN=$(curl -X POST http://localhost:${FRONTEND_PORT:-8080}/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "demo", "password": "a-strong-password1"}' | python3 -c \
+  "import sys, json; print(json.load(sys.stdin)['access_token'])")
+
 # REST
-curl http://localhost:${FRONTEND_PORT:-8080}/api/v1/health
+curl http://localhost:${FRONTEND_PORT:-8080}/api/v1/health \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 
 # Direct query (replace with a real question against your seeded data)
 curl -X POST http://localhost:${FRONTEND_PORT:-8080}/api/v1/query \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -d '{"question": "How many rows are in the customers table?"}'
 
 # SSE (Ctrl+C once you see event: frames)
 curl -N -X POST http://localhost:${FRONTEND_PORT:-8080}/api/v1/query/stream \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -d '{"question": "How many rows are in the customers table?"}'
 ```
 
 A WebSocket client is needed for `/ws/query` (`curl` doesn't speak WebSocket) -- the frontend
 itself exercises it directly from the browser (Dashboard page, streaming mode, WebSocket
-transport).
+transport). It also requires the same `analyst` role, authenticated via a `?token=$ACCESS_TOKEN`
+query parameter (a browser's native `WebSocket` API can't set an `Authorization` header at all --
+see `querymind.streaming.websocket`'s own docstring), e.g.
+`ws://localhost:${FRONTEND_PORT:-8080}/ws/query?token=$ACCESS_TOKEN`.
 
 **Persistent volume**: `postgres_data` is unchanged from Phase 19A/before -- `docker compose
 down` (without `-v`) followed by `docker compose up -d` again brings the same data back, since
@@ -198,6 +231,15 @@ Check a running container's status with `docker inspect --format='{{.State.Healt
 
 ## Security decisions
 
+- **No direct backend exposure (Phase 22D-6)**: under `docker compose up`, `app` publishes no
+  host port at all -- `frontend`/nginx is the single controlled external entry point. This
+  matters beyond just "one less open port": nginx is where security headers/CSP are applied
+  consistently (Phase 22D-4), where API/SSE/WebSocket proxying is centralized, where IP-based
+  rate limiting has exactly one ingress path to reason about (no more direct-vs-proxied
+  client-IP discrepancy), and where TLS termination would go in a real deployment -- none of
+  which a caller could bypass by hitting the backend directly, because that path no longer
+  exists. The backend remains fully reachable by every container that legitimately needs it
+  (`frontend`, and any other service later added to the `querymind` network).
 - **Non-root**: the backend runs as a dedicated system user (`app`); the frontend runs as the
   `nginxinc/nginx-unprivileged` image's built-in non-root `nginx` user, which is also why it
   listens on `8080` rather than `80` — binding a port below 1024 requires root, which this image

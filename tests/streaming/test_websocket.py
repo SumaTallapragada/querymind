@@ -14,6 +14,13 @@ package's `conftest.py`, for why). The token's value is never checked by the fak
 `authorize_websocket_app` installs -- these tests exist to prove pipeline streaming, not
 authorization itself (covered by the Phase 22B authorization suite, which does check real
 tokens against `/ws/query` end to end).
+
+`test_a_caller_over_the_query_rate_limit_is_rejected_before_accept` (Phase 22D) covers
+`_authenticate_and_authorize`'s rate-limit check the same way: `app.state.container.rate_limiter`
+is swapped for a fake that always denies, via `object.__setattr__` (the container is a frozen
+dataclass -- the standard escape hatch for patching one field in a test, never used in
+production code); mirrors `tests/api/test_audit_logging.py`'s identical technique for
+`container.audit_logger`.
 """
 
 from __future__ import annotations
@@ -26,11 +33,23 @@ from querymind.api.app import create_app
 from querymind.api.dependencies import get_query_mind_engine
 from querymind.core.config import Settings
 from querymind.orchestrator.models import PipelineStatus, QueryMindResponse
+from querymind.security.rate_limiter import RateLimitDecision
 
 from .conftest import FakeQueryMindEngine, authorize_websocket_app, make_success_response
 
 _QUESTION = "Who are our top 5 customers by revenue?"
 _AUTH_HEADERS = {"Authorization": "Bearer test-token"}
+
+
+class _AlwaysDenyRateLimiter:
+    """A `RateLimiter` that has already exhausted every bucket -- deterministic, no need to
+    actually issue `rate_limit_query_per_minute` requests first to reach the same state.
+    """
+
+    async def check(
+        self, key: str, *, capacity: int, refill_per_second: float
+    ) -> RateLimitDecision:
+        return RateLimitDecision(allowed=False, retry_after_seconds=30.0)
 
 
 def test_streams_one_frame_per_pipeline_event(settings: Settings) -> None:
@@ -155,3 +174,25 @@ def test_an_empty_question_closes_with_policy_violation(settings: Settings) -> N
         with pytest.raises(WebSocketDisconnect) as exc_info:
             ws.receive_json()
         assert exc_info.value.code == 1008
+
+
+def test_a_caller_over_the_query_rate_limit_is_rejected_before_accept(settings: Settings) -> None:
+    app = create_app(settings=settings)
+    engine = FakeQueryMindEngine(make_success_response())
+    app.dependency_overrides[get_query_mind_engine] = lambda: engine
+    authorize_websocket_app(app)
+
+    with TestClient(app) as client:
+        object.__setattr__(app.state.container, "rate_limiter", _AlwaysDenyRateLimiter())
+
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            client.websocket_connect("/ws/query", headers=_AUTH_HEADERS) as ws,
+        ):
+            ws.receive_json()
+
+        assert exc_info.value.code == 1013
+
+    # The connection was rejected before the pipeline ever ran -- proves the check happens
+    # before `.accept()`, not as some later, in-connection behavior.
+    assert engine.received_questions == []

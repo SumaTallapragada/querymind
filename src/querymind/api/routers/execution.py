@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from querymind.api.dependencies import RequireAnalyst, SQLExecutionEngineDep
+from querymind.api.dependencies import RateLimitQuery, RequireAnalyst, SQLExecutionEngineDep
 from querymind.api.models.request import ExecuteRequest
 from querymind.sql_execution.models import SQLExecutionResult
 
@@ -34,7 +34,10 @@ router = APIRouter(prefix="/query/execute", tags=["query"])
     ),
 )
 async def execute_sql(
-    request: ExecuteRequest, execution_engine: SQLExecutionEngineDep, _analyst: RequireAnalyst
+    request: ExecuteRequest,
+    execution_engine: SQLExecutionEngineDep,
+    _analyst: RequireAnalyst,
+    _rate_limit: RateLimitQuery,
 ) -> SQLExecutionResult:
     return await execution_engine.execute(
         request.validation_result.generated_sql, request.validation_result

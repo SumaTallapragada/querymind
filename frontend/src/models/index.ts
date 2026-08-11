@@ -10,3 +10,4 @@ export * from "./observability";
 export * from "./settings";
 export * from "./requests";
 export * from "./errors";
+export * from "./auth";

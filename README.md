@@ -143,6 +143,19 @@ returns its result as-is; no route generates, validates, repairs, or
 executes SQL itself, and no business logic exists in `querymind.api`. All
 routes are mounted under `settings.api_v1_prefix` (`/api/v1` by default).
 
+Every `localhost:8000` example below assumes the backend is reachable directly — true when it's
+running on the host (`uv run uvicorn querymind.main:app --reload`, [Installation](#installation)'s
+Option B) or exec'd into directly, but **not** true under `docker compose up` (Phase 22D-6
+hardened the `app` service so it publishes no host port at all — see
+[`docs/docker.md`](docs/docker.md#docker-compose-the-full-local-production-stack)). Under Docker
+Compose, reach every one of these same paths through the frontend's reverse proxy instead:
+substitute `http://localhost:8080` for `http://localhost:8000` (e.g.
+`http://localhost:8080/api/v1/query`) — nginx forwards `/api/*`, the SSE endpoint, and `/ws/*` to
+`app:8000` over the internal Docker network unchanged. `/docs`/`/redoc` (interactive OpenAPI docs) are the one exception nginx doesn't proxy at all: under
+Docker Compose they aren't reachable from the host in any form (no host port 8000, and
+`frontend/nginx.conf`'s SPA fallback serves the React app for that path instead) — only
+`http://localhost:8000/docs` when running the backend directly on the host.
+
 | Method | Path | Calls | Returns |
 |---|---|---|---|
 | `POST` | `/query` | `QueryMindEngine.ask` | `QueryMindResponse` — the complete pipeline, end to end |
@@ -271,6 +284,13 @@ set custom headers at all).
 See [`ARCHITECTURE.md` §20](ARCHITECTURE.md#20-authorization-phase-22b) for the full design,
 including why a role is never stored in the JWT and why `/health/live`/`/health/ready` stay
 unauthenticated.
+
+Phase 22C adds a login page and route/role guarding to the Phase 18 React frontend, matching the
+table above 1:1 (a `VIEWER` sees only Health in the sidebar, an `ANALYST` also sees Dashboard, and
+Diagnostics/Metrics/Settings stay `ADMIN`-only) — frontend-side, for navigation UX only; the
+backend re-checks every request regardless of what the frontend renders. See
+[`frontend/README.md`](frontend/README.md#authentication) for the login flow, token storage, and
+refresh behavior.
 
 ## Streaming (SSE & WebSockets)
 
@@ -577,7 +597,10 @@ Phase 17 adds the real-time streaming described in
 [Streaming](#streaming-sse--websockets); Phase 22A adds user accounts and
 JWT authentication, described in [Authentication](#authentication); Phase
 22B adds role-based authorization on top, described in
-[Authorization](#authorization).
+[Authorization](#authorization); Phase 22C adds a login UI and route/role
+guarding to the Phase 18 frontend — see
+[`frontend/README.md`](frontend/README.md) for how it authenticates,
+stores tokens, and refreshes a session.
 
 Not yet implemented — explicitly deferred, phase by phase, throughout this
 project's history (see [`docs/KNOWN_LIMITATIONS.md`](docs/KNOWN_LIMITATIONS.md)
@@ -587,10 +610,6 @@ for the complete, current list):
 - API keys, OAuth/SSO, multi-tenancy, per-resource permissions (ABAC) —
   Phase 22B adds exactly three ranked roles (`ADMIN`/`ANALYST`/`VIEWER`)
   and nothing beyond that; see [Authorization](#authorization).
-- A frontend (React or otherwise) with a login UI — the existing frontend
-  (Phase 18) has none yet, so its `/query`/`/settings`/streaming calls now
-  fail with `401` until one is added; a known, accepted consequence of
-  Phase 22B protecting those routes, not a regression to fix here.
 - Result visualization — charts, HTML tables, CSV/Excel export.
 - Result caching — every phase defines a cache `Protocol` and a
   `NoOp*` implementation, deliberately not wired up.

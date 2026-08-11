@@ -37,6 +37,10 @@ This module adds:
   rather than duplicated across the two files that need it. `make_user_read` defaults to
   `role=ADMIN` (Phase 22B) so a caller that doesn't care about role -- most of `test_auth.py`
   -- never has to think about it; a role-sensitive test overrides it explicitly.
+- `FakeAuditLogger` (Phase 22D): the `AuditLoggerDep` stand-in, recording every `.record(...)`
+  call for assertions -- no repository, no database, mirroring `FakeAuthenticationService`'s own
+  shape. Shared between `test_dependencies.py` (direct-call unit tests) and
+  `test_audit_logging.py`/`test_api_keys.py` (HTTP-level tests via `app.dependency_overrides`).
 """
 
 from __future__ import annotations
@@ -44,7 +48,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -56,10 +60,11 @@ from querymind.api.app import create_app
 from querymind.api.dependencies import get_current_user
 from querymind.auth.models import UserRole
 from querymind.auth.repository import AuthenticationRepository
-from querymind.auth.schemas import TokenPair, UserRead
+from querymind.auth.schemas import ApiKeyCreated, ApiKeyRead, TokenPair, UserRead
 from querymind.auth.service import AuthenticationService
 from querymind.core.config import Settings
 from querymind.llm.client import HttpxTransport
+from querymind.security.audit import AuditEventType
 
 
 @pytest.fixture
@@ -162,6 +167,12 @@ class FakeAuthenticationService:
         self.get_current_user_result: object = NotImplementedError(
             "get_current_user not configured"
         )
+        self.create_api_key_result: object = NotImplementedError("create_api_key not configured")
+        self.list_api_keys_result: object = NotImplementedError("list_api_keys not configured")
+        self.revoke_api_key_exception: Exception | None = None
+        self.authenticate_api_key_result: object = NotImplementedError(
+            "authenticate_api_key not configured"
+        )
 
         self.register_calls: list[dict[str, str]] = []
         self.authenticate_calls: list[tuple[str, str]] = []
@@ -169,6 +180,10 @@ class FakeAuthenticationService:
         self.refresh_tokens_calls: list[str] = []
         self.logout_calls: list[str] = []
         self.get_current_user_calls: list[str] = []
+        self.create_api_key_calls: list[dict[str, object]] = []
+        self.list_api_keys_calls: list[int] = []
+        self.revoke_api_key_calls: list[dict[str, object]] = []
+        self.authenticate_api_key_calls: list[str] = []
 
     async def register_user(self, *, username: str, email: str, password: str) -> UserRead:
         self.register_calls.append({"username": username, "email": email, "password": password})
@@ -194,6 +209,25 @@ class FakeAuthenticationService:
     async def get_current_user(self, access_token: str) -> UserRead:
         self.get_current_user_calls.append(access_token)
         return _resolve(self.get_current_user_result)  # type: ignore[return-value]
+
+    async def create_api_key(
+        self, *, user_id: int, name: str, expires_at: object = None
+    ) -> ApiKeyCreated:
+        self.create_api_key_calls.append({"user_id": user_id, "name": name})
+        return _resolve(self.create_api_key_result)  # type: ignore[return-value]
+
+    async def list_api_keys(self, user_id: int) -> list[ApiKeyRead]:
+        self.list_api_keys_calls.append(user_id)
+        return _resolve(self.list_api_keys_result)  # type: ignore[return-value]
+
+    async def revoke_api_key(self, *, requesting_user: UserRead, key_id: int) -> None:
+        self.revoke_api_key_calls.append({"requesting_user": requesting_user, "key_id": key_id})
+        if self.revoke_api_key_exception is not None:
+            raise self.revoke_api_key_exception
+
+    async def authenticate_api_key(self, raw_key: str) -> UserRead:
+        self.authenticate_api_key_calls.append(raw_key)
+        return _resolve(self.authenticate_api_key_result)  # type: ignore[return-value]
 
     def has_role(self, user: UserRead, role: UserRole) -> bool:
         return _real_service_for_authorization.has_role(user, role)
@@ -225,3 +259,36 @@ def make_user_read(**overrides: object) -> UserRead:
 
 def make_token_pair() -> TokenPair:
     return TokenPair(access_token="access.token.value", refresh_token="refresh.token.value")
+
+
+def make_api_key_read(**overrides: object) -> ApiKeyRead:
+    defaults: dict[str, object] = {
+        "id": 1,
+        "key_prefix": "qm_abcd1234",
+        "name": "CI pipeline",
+        "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "expires_at": None,
+        "last_used_at": None,
+        "revoked_at": None,
+    }
+    defaults.update(overrides)
+    return ApiKeyRead(**defaults)  # type: ignore[arg-type]
+
+
+def make_api_key_created(**overrides: object) -> ApiKeyCreated:
+    key = overrides.pop("key", None) or make_api_key_read()
+    defaults: dict[str, object] = {"raw_key": "qm_test-raw-key-value", "key": key}
+    defaults.update(overrides)
+    return ApiKeyCreated(**defaults)  # type: ignore[arg-type]
+
+
+class FakeAuditLogger:
+    """A hand-written stand-in for `querymind.security.audit.AuditLogger` -- no repository, no
+    database. Records every `.record(...)` call verbatim for assertions.
+    """
+
+    def __init__(self) -> None:
+        self.records: list[dict[str, Any]] = []
+
+    async def record(self, event_type: AuditEventType, *, success: bool, **fields: object) -> None:
+        self.records.append({"event_type": event_type, "success": success, **fields})

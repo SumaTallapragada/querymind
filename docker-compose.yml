@@ -30,8 +30,8 @@ services:
       context: .
       # Phase 19B: built from Dockerfile.backend (the Phase 19A production image with a
       # container-configurable listen port), not the legacy root Dockerfile it superseded —
-      # its EXPOSE/HEALTHCHECK/CMD all read APP_PORT, which is why `ports:` and `healthcheck:`
-      # below both key off ${APP_PORT} too, rather than a hardcoded 8000.
+      # its EXPOSE/HEALTHCHECK/CMD all read APP_PORT, which is why `healthcheck:` below keys
+      # off ${APP_PORT} too, rather than a hardcoded 8000.
       dockerfile: Dockerfile.backend
     restart: unless-stopped
     env_file:
@@ -44,12 +44,22 @@ services:
       # avoid colliding with a Postgres already running on the host.
       POSTGRES_HOST: db
       POSTGRES_PORT: 5432
-    ports:
-      # Both sides must move together: Dockerfile.backend's uvicorn actually binds to
-      # $APP_PORT inside the container now (unlike the legacy Dockerfile, which always bound
-      # 8000 regardless of APP_PORT) — mapping to a hardcoded container-side 8000 here would
-      # silently break if APP_PORT were ever changed away from its default.
-      - "${APP_PORT:-8000}:${APP_PORT:-8000}"
+    # Phase 22D-6: deliberately no `ports:` mapping here — the backend is no longer published
+    # to the host at all. `expose` (unlike `ports`) never publishes a host port; it only
+    # documents, for a human reading this file, which port other *containers* on the
+    # `querymind` network reach this service on — Compose's own DNS-based service-to-service
+    # networking already works without it (any container on this network can already reach
+    # `app:8000` regardless of whether `expose` is declared), so this is pure
+    # self-documentation, not a functional requirement. `frontend/nginx.conf` is the one and
+    # only externally reachable entry point now (`${FRONTEND_PORT:-8080}` below); it proxies
+    # `/api/*`, the SSE endpoint, and `/ws/*` to `app:8000` over this same internal network,
+    # exactly as it already did — nothing about that proxying, or the app's own
+    # `0.0.0.0:${APP_PORT:-8000}` bind inside the container, changes here. See
+    # docs/docker.md's "Docker Compose" section for the full rationale (single controlled
+    # ingress, consistent security headers, one IP-based rate-limiting path, backend isolated
+    # on the Docker network).
+    expose:
+      - "${APP_PORT:-8000}"
     depends_on:
       db:
         condition: service_healthy

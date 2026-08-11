@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from querymind.api.dependencies import RequireAnalyst, ResultFormatterEngineDep
+from querymind.api.dependencies import RateLimitQuery, RequireAnalyst, ResultFormatterEngineDep
 from querymind.result_formatter.models import BusinessAnswer
 from querymind.sql_execution.models import SQLExecutionResult
 
@@ -37,5 +37,6 @@ async def format_result(
     execution_result: SQLExecutionResult,
     formatter: ResultFormatterEngineDep,
     _analyst: RequireAnalyst,
+    _rate_limit: RateLimitQuery,
 ) -> BusinessAnswer:
     return formatter.format(execution_result)

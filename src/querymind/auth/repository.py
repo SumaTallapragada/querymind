@@ -15,12 +15,12 @@ be constructed once (Phase 22A Part 2's `ApplicationContainer`) rather than per-
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from querymind.auth.models import RefreshToken, User
+from querymind.auth.models import ApiKey, RefreshToken, User
 from querymind.db.session import transactional_session
 
 
@@ -87,3 +87,59 @@ class AuthenticationRepository:
             refresh_token = result.scalar_one_or_none()
             if refresh_token is not None:
                 refresh_token.revoked = True
+
+    # -- API keys (Phase 22D) -----------------------------------------------------------------
+
+    async def create_api_key(
+        self,
+        *,
+        user_id: int,
+        key_prefix: str,
+        key_hash: str,
+        name: str,
+        expires_at: datetime | None,
+    ) -> ApiKey:
+        async with transactional_session(self._session_factory) as session:
+            api_key = ApiKey(
+                user_id=user_id,
+                key_prefix=key_prefix,
+                key_hash=key_hash,
+                name=name,
+                expires_at=expires_at,
+            )
+            session.add(api_key)
+            await session.flush()
+            await session.refresh(api_key)
+            return api_key
+
+    async def get_api_key_by_hash(self, key_hash: str) -> ApiKey | None:
+        async with transactional_session(self._session_factory) as session:
+            result = await session.execute(select(ApiKey).where(ApiKey.key_hash == key_hash))
+            return result.scalar_one_or_none()
+
+    async def get_api_key_by_id(self, key_id: int) -> ApiKey | None:
+        async with transactional_session(self._session_factory) as session:
+            return await session.get(ApiKey, key_id)
+
+    async def list_api_keys_for_user(self, user_id: int) -> list[ApiKey]:
+        async with transactional_session(self._session_factory) as session:
+            result = await session.execute(
+                select(ApiKey).where(ApiKey.user_id == user_id).order_by(ApiKey.created_at.desc())
+            )
+            return list(result.scalars().all())
+
+    async def revoke_api_key(self, key_id: int) -> None:
+        """No-op if `key_id` doesn't exist or is already revoked -- mirrors
+        `revoke_refresh_token`'s own idempotent-revoke precedent. Ownership/admin authorization
+        is `AuthenticationService.revoke_api_key`'s job, not this method's.
+        """
+        async with transactional_session(self._session_factory) as session:
+            api_key = await session.get(ApiKey, key_id)
+            if api_key is not None and api_key.revoked_at is None:
+                api_key.revoked_at = datetime.now(UTC)
+
+    async def touch_api_key_last_used(self, key_id: int) -> None:
+        async with transactional_session(self._session_factory) as session:
+            api_key = await session.get(ApiKey, key_id)
+            if api_key is not None:
+                api_key.last_used_at = datetime.now(UTC)

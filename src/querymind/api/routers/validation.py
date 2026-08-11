@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from querymind.api.dependencies import RequireAnalyst, SQLValidationEngineDep
+from querymind.api.dependencies import RateLimitQuery, RequireAnalyst, SQLValidationEngineDep
 from querymind.api.models.request import SqlInputRequest
 from querymind.llm.models import FinishReason, GenerationMetrics, LLMProvider, TokenUsage
 from querymind.query_library.models import SQLDialect
@@ -86,7 +86,10 @@ def _wrap_as_generated_sql(sql: str, dialect: SQLDialect) -> GeneratedSQL:
     },
 )
 async def validate_sql(
-    request: SqlInputRequest, validation_engine: SQLValidationEngineDep, _analyst: RequireAnalyst
+    request: SqlInputRequest,
+    validation_engine: SQLValidationEngineDep,
+    _analyst: RequireAnalyst,
+    _rate_limit: RateLimitQuery,
 ) -> SQLValidationResult:
     generated_sql = _wrap_as_generated_sql(request.sql, request.dialect)
     return validation_engine.validate(generated_sql)

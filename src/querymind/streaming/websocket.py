@@ -24,6 +24,17 @@ is the necessary substitute -- it still delegates entirely to
 its own), it just can't be a `Depends()`-resolved dependency here. It also accepts the token via
 a `token` query parameter as well as the `Authorization` header, since a browser's native
 `WebSocket` API cannot set custom headers at all -- only non-browser WebSocket clients can.
+
+Phase 22D's per-user query rate limit (`RateLimitQuery`/`check_query_rate_limit` in
+`querymind.api.dependencies`, shared with `POST /query`/`/query/stream`/etc.) is checked here
+too, for the same reason authentication is: this route can't use `Depends()` at all, so
+`_authenticate_and_authorize` calls `container.rate_limiter` directly, using the exact same
+`f"query:user:{user.id}"` key and `Settings.rate_limit_query_per_minute` limit every other
+query-family route uses, keeping one shared bucket per user regardless of which surface they
+use. Checked *before* `.accept()`, same as authentication -- a caller over the limit never gets
+a connection at all, and individual frames within an already-open connection are never
+rate-limited (there is only ever one question per connection to begin with; see this module's
+own opening paragraph).
 """
 
 from __future__ import annotations
@@ -55,7 +66,8 @@ async def _authenticate_and_authorize(
     a WebSocket route's own errors don't flow through the HTTP-response-shaped
     `querymind.api.exception_handlers` the way an HTTP route's do, so this mirrors the
     established inline-validation pattern already used a few lines below for an invalid request
-    body, not that mechanism.
+    body, not that mechanism. The same reasoning covers the rate-limit check added here in
+    Phase 22D -- see this module's own docstring.
     """
     authorization = websocket.headers.get("Authorization", "")
     token = authorization.removeprefix("Bearer ").strip() or websocket.query_params.get("token")
@@ -68,6 +80,18 @@ async def _authenticate_and_authorize(
     except (AuthenticationError, AuthorizationError) as exc:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason=str(exc)[:120])
         return None
+
+    capacity = container.settings.rate_limit_query_per_minute
+    decision = await container.rate_limiter.check(
+        f"query:user:{user.id}", capacity=capacity, refill_per_second=capacity / 60
+    )
+    if not decision.allowed:
+        await websocket.close(
+            code=status.WS_1013_TRY_AGAIN_LATER,
+            reason="Too many requests. Please slow down and try again shortly.",
+        )
+        return None
+
     return user
 
 

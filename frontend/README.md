@@ -4,16 +4,18 @@ Phase 18 of Text-to-SQLAnalyticsEngine: a React + TypeScript UI over the QueryMi
 backend (Phases 1–17). It is a pure client of the existing REST and streaming APIs -- no
 business logic (SQL generation, validation, repair, execution, or result formatting) is
 duplicated here. Every number, status, and message shown on screen was computed by the backend.
+Phase 22C adds a login page and session/route/role handling on top -- see
+[Authentication](#authentication) below.
 
 ## Stack
 
 - **React 19 + TypeScript**, built with **Vite**
 - **TailwindCSS 4** + **shadcn/ui** (Radix primitives) for styling and components
 - **TanStack Query** for server state (REST requests: health, diagnostics, metrics, settings,
-  the direct `POST /query` family)
+  the direct `POST /query` family, and the `POST /auth/login` mutation)
 - **Zustand** for client-only state (`queryStore` for a question session -- direct or
-  streaming -- `uiStore` for theme/sidebar/transport preference)
-- **React Hook Form + Zod** for the question form
+  streaming -- `uiStore` for theme/sidebar/transport preference, `authStore` for the session)
+- **React Hook Form + Zod** for the question and login forms
 - **Recharts** for the Metrics page's charts
 - **Vitest + Testing Library + MSW** for tests
 
@@ -57,16 +59,16 @@ copy `.env.example` to `.env.local` and set:
 
 ```
 src/
-  app/            App.tsx: provider tree (ErrorBoundary > QueryClientProvider > TooltipProvider > RouterProvider)
-  routes/         React Router route table
-  pages/          One folder per route: Dashboard, Diagnostics, Health, Metrics, Settings
-  components/     Presentational + feature components (see below), plus components/ui (shadcn/ui primitives)
-  hooks/          TanStack Query hooks (server state) and useStreaming/useClipboard (client behavior)
-  services/       api.ts (REST) and streaming.ts (SSE/WebSocket) -- the only files that call fetch/WebSocket
-  store/          Zustand stores: queryStore (question session), uiStore (theme/sidebar/transport)
+  app/            App.tsx: provider tree (ErrorBoundary > QueryClientProvider > TooltipProvider > RouterProvider), starts session restoration
+  routes/         React Router route table -- public /login, RequireAuth-gated Layout, per-page RequireRole
+  pages/          One folder per route: Dashboard, Diagnostics, Health, Metrics, Settings, Login
+  components/     Presentational + feature components (see below), plus components/ui (shadcn/ui primitives), components/Auth (RequireAuth/RequireRole)
+  hooks/          TanStack Query hooks (server state) and useStreaming/useClipboard/useAuth (client behavior)
+  services/       api.ts (REST, incl. auth token attach/refresh) and streaming.ts (SSE/WebSocket) -- the only files that call fetch/WebSocket
+  store/          Zustand stores: queryStore (question session), uiStore (theme/sidebar/transport), authStore (session/tokens/user)
   models/         TypeScript types mirroring every backend Pydantic model 1:1, snake_case field names kept as-is
-  utils/          Pure functions: stream event -> response derivation, CSV export, error messages, ...
-  tests/          Vitest suite: components/, hooks/, pages/, integration/, mocks/ (MSW), setup.ts
+  utils/          Pure functions: stream event -> response derivation, CSV export, error messages, role-rank comparison, ...
+  tests/          Vitest suite: components/, hooks/, pages/, store/, services/, integration/, mocks/ (MSW), setup.ts
 ```
 
 ### Data flow
@@ -93,16 +95,73 @@ Zustand's `persist` middleware against `localStorage`. Anything that *is* cachea
 (health, diagnostics, metrics, settings, a direct query's response) goes through TanStack Query
 instead of either store.
 
+## Authentication
+
+Phase 22C adds a login page and session handling on top of the Phase 22A/22B backend
+(`/api/v1/auth/*`, three ranked roles). The architecture follows the rest of this app: no
+parallel client, no JWT parsing duplicated per page.
+
+```
+React UI (LoginPage, Sidebar, Topbar)
+   |
+   v
+authStore (Zustand, store/authStore.ts) -- status/accessToken/refreshToken/user
+   |
+   v
+services/api.ts -- attaches Authorization: Bearer <access_token>, refreshes on 401
+   |
+   v
+FastAPI /api/v1/auth/* -> AuthenticationService
+```
+
+**Token storage.** The backend returns `access_token`/`refresh_token` as JSON (no HttpOnly
+cookie exists to lean on), so both live client-side, but not identically: `authStore` keeps the
+short-lived (30 min) access token **in memory only** -- never written to disk -- and persists
+only the longer-lived (14 day) refresh token to `localStorage` via `zustand/persist`
+(`partialize: (state) => ({ refreshToken: state.refreshToken })`). This is a deliberate
+narrowing, not a claim of cookie-level security: anything in `localStorage` is still readable by
+an XSS payload, which is why nothing here substitutes for the app's own XSS hygiene (no
+`dangerouslySetInnerHTML`, escaped rendering throughout). Neither token is ever logged or
+rendered in the UI; the Topbar user menu shows only `username`/`role`.
+
+**Session restoration.** `App.tsx` calls `authStore.restoreSession()` once on mount. If a
+refresh token was persisted, it's exchanged for a fresh pair via `POST /auth/refresh`, then
+`GET /auth/me` fills in the user profile; either call failing clears the session cleanly. While
+this is in flight, `RequireAuth` (`components/Auth/RequireAuth.tsx`) shows a loading state
+instead of redirecting, so a valid persisted session never flashes the login page.
+
+**Refresh-on-401.** `services/api.ts#request()` attaches the current access token to every call
+except `/auth/login`/`/auth/refresh` (which don't have one yet). On a `401` from any other
+endpoint, it refreshes once via a single shared in-flight promise -- so N concurrent 401s trigger
+exactly one `/auth/refresh` call, not N -- and retries the original request exactly once. A
+failed refresh clears `authStore` (logging the user out) and lets the original error propagate;
+since the retry happens at most once per request, an invalid session can never loop.
+
+**Route protection.** `routes/index.tsx`: `/login` is public; every other route is nested under
+`RequireAuth` (redirects to `/login`, remembering the requested path via `location.state.from`
+for `LoginPage` to send the user back to after signing in). Dashboard/Diagnostics/Metrics/Settings
+are additionally wrapped in `RequireRole` with the same floor the backend enforces (`ANALYST` for
+Dashboard, `ADMIN` for the rest; Health has none beyond being authenticated) -- see the root
+README's [Authorization](../README.md#authorization) table. `Sidebar` filters its nav items the
+same way. **This is UX only**: the backend re-validates role on every request regardless of what
+the frontend shows or hides.
+
 ## Testing
 
 `src/tests/` mirrors the coverage a Phase 18 frontend needs:
 
-- `utils/`, `store/` -- pure logic, no rendering
+- `utils/`, `store/` -- pure logic, no rendering (includes `authStore`'s login/logout/
+  restoreSession, and `utils/roles.ts`'s rank comparison)
 - `hooks/` -- TanStack Query hooks against MSW-mocked endpoints; `useStreaming` against a mocked
   `services/streaming.ts`
+- `services/` -- `apiAuth.test.ts` covers `request()`'s Authorization-header attachment and
+  refresh-and-retry behavior directly (header presence, single-flight refresh under concurrent
+  401s, a rejected refresh clearing the session without looping)
 - `components/` -- one file per component with meaningful behavior (data-driven rendering, user
-  interaction, empty/error states)
-- `pages/` -- loading/data/error states for each route, against MSW
+  interaction, empty/error states), including `RequireAuth`/`RequireRole` (redirect/loading/role
+  gating) and the role-aware `Sidebar`/`Topbar` user menu
+- `pages/` -- loading/data/error states for each route, against MSW; `LoginPage` covers
+  validation, backend error display, duplicate-submit prevention, and post-login redirect
 - `integration/` -- a full direct-mode question flow and a full streaming-mode question flow,
   end to end through `QueryInput` -> the hooks -> `queryStore` -> `DashboardPage`'s panels
 

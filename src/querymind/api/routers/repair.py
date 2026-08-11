@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from querymind.api.dependencies import QueryMindEngineDep, RequireAnalyst
+from querymind.api.dependencies import QueryMindEngineDep, RateLimitQuery, RequireAnalyst
 from querymind.api.models.request import RepairRequest
 from querymind.sql_repair.models import SQLRepairResult
 
@@ -34,6 +34,9 @@ router = APIRouter(prefix="/query/repair", tags=["query"])
     ),
 )
 async def repair_sql(
-    request: RepairRequest, engine: QueryMindEngineDep, _analyst: RequireAnalyst
+    request: RepairRequest,
+    engine: QueryMindEngineDep,
+    _analyst: RequireAnalyst,
+    _rate_limit: RateLimitQuery,
 ) -> SQLRepairResult:
     return await engine.repair(request.question, request.validation_result)

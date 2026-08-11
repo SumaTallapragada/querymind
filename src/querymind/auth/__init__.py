@@ -12,14 +12,24 @@ and authorization (`has_role`, `is_admin`, `require_role`, `require_any_role`), 
 
 from __future__ import annotations
 
+from querymind.auth.api_keys import (
+    API_KEY_PREFIX,
+    api_key_prefix,
+    generate_raw_api_key,
+    hash_api_key,
+)
 from querymind.auth.cache import AuthenticationCache, NoOpAuthenticationCache
 from querymind.auth.exceptions import (
+    ApiKeyExpiredError,
+    ApiKeyNotFoundError,
+    ApiKeyRevokedError,
     AuthenticationError,
     AuthorizationError,
     DuplicateUserError,
     ForbiddenRoleError,
     InactiveUserError,
     InsufficientPermissionsError,
+    InvalidApiKeyError,
     InvalidCredentialsError,
     InvalidTokenError,
     RefreshTokenRevokedError,
@@ -32,10 +42,13 @@ from querymind.auth.jwt import (
     decode_token,
     validate_token,
 )
-from querymind.auth.models import AuthBase, RefreshToken, User, UserRole
+from querymind.auth.models import ApiKey, AuthBase, RefreshToken, User, UserRole
 from querymind.auth.passwords import hash_password, verify_password
 from querymind.auth.repository import AuthenticationRepository
 from querymind.auth.schemas import (
+    ApiKeyCreate,
+    ApiKeyCreated,
+    ApiKeyRead,
     AuthenticationResult,
     RefreshRequest,
     TokenPair,
@@ -47,6 +60,14 @@ from querymind.auth.serializer import AuthenticationSerializer
 from querymind.auth.service import AuthenticationService
 
 __all__ = [
+    "API_KEY_PREFIX",
+    "ApiKey",
+    "ApiKeyCreate",
+    "ApiKeyCreated",
+    "ApiKeyExpiredError",
+    "ApiKeyNotFoundError",
+    "ApiKeyRead",
+    "ApiKeyRevokedError",
     "AuthBase",
     "AuthenticationCache",
     "AuthenticationError",
@@ -59,6 +80,7 @@ __all__ = [
     "ForbiddenRoleError",
     "InactiveUserError",
     "InsufficientPermissionsError",
+    "InvalidApiKeyError",
     "InvalidCredentialsError",
     "InvalidTokenError",
     "NoOpAuthenticationCache",
@@ -73,9 +95,12 @@ __all__ = [
     "UserLogin",
     "UserRead",
     "UserRole",
+    "api_key_prefix",
     "create_access_token",
     "create_refresh_token",
     "decode_token",
+    "generate_raw_api_key",
+    "hash_api_key",
     "hash_password",
     "validate_token",
     "verify_password",

@@ -21,7 +21,13 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Request, status
 from fastapi.responses import StreamingResponse
 
-from querymind.api.dependencies import EventBusDep, LoggerDep, QueryMindEngineDep, RequireAnalyst
+from querymind.api.dependencies import (
+    EventBusDep,
+    LoggerDep,
+    QueryMindEngineDep,
+    RateLimitQuery,
+    RequireAnalyst,
+)
 from querymind.api.models.request import QuestionRequest
 from querymind.streaming.models import PipelineEvent
 from querymind.streaming.serializer import serialize_event
@@ -78,6 +84,7 @@ async def stream_query(
     event_bus: EventBusDep,
     logger: LoggerDep,
     _analyst: RequireAnalyst,
+    _rate_limit: RateLimitQuery,
 ) -> StreamingResponse:
     correlation_id: str = (
         getattr(request.state, "correlation_id", None)

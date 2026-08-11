@@ -20,6 +20,8 @@ import type {
   StageCompletedEvent,
   StageFailedEvent,
   StageStartedEvent,
+  TokenPair,
+  UserRead,
 } from "@/models";
 
 export const generatedSqlFixture: GeneratedSQL = {
@@ -352,6 +354,40 @@ export const pipelineCompletedEventFixture: PipelineCompletedEvent = {
   pipeline_stage: null,
   event_type: "pipeline_completed",
   payload: { status: "success", error: null, business_answer: businessAnswerFixture },
+};
+
+export const tokenPairFixture: TokenPair = {
+  access_token: "mock-access-token",
+  refresh_token: "mock-refresh-token",
+  token_type: "bearer",
+};
+
+export const userReadFixture: UserRead = {
+  id: 1,
+  username: "alice",
+  email: "alice@example.com",
+  is_active: true,
+  is_superuser: false,
+  role: "analyst",
+  created_at: "2026-08-01T00:00:00Z",
+  updated_at: "2026-08-01T00:00:00Z",
+};
+
+export const adminUserReadFixture: UserRead = {
+  ...userReadFixture,
+  id: 2,
+  username: "admin",
+  email: "admin@example.com",
+  is_superuser: true,
+  role: "admin",
+};
+
+export const viewerUserReadFixture: UserRead = {
+  ...userReadFixture,
+  id: 3,
+  username: "viewer",
+  email: "viewer@example.com",
+  role: "viewer",
 };
 
 export const pipelineFailedEventFixture: PipelineFailedEvent = {

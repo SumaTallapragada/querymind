@@ -92,6 +92,9 @@ class User(TimestampMixin, SoftDeleteMixin, AuthBase):
     refresh_tokens: Mapped[list[RefreshToken]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    api_keys: Mapped[list[ApiKey]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
 
 class RefreshToken(CreatedAtMixin, AuthBase):
@@ -112,3 +115,31 @@ class RefreshToken(CreatedAtMixin, AuthBase):
     revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
 
     user: Mapped[User] = relationship(back_populates="refresh_tokens")
+
+
+class ApiKey(CreatedAtMixin, AuthBase):
+    """One issued API key (Phase 22D) -- a second, machine-oriented credential resolving to the
+    same `User` identity/role a JWT would, never a parallel permission system. Only `key_hash`
+    (a SHA-256 digest, see `querymind.auth.api_keys`) is ever persisted; the raw key itself is
+    never stored anywhere, matching `User.password_hash`'s own "never the secret itself" rule.
+
+    `revoked_at` (nullable timestamp, not a bare `bool` the way `RefreshToken.revoked` is) records
+    *when* a key was revoked, useful for audit review -- `RefreshToken` predates the audit-log
+    table (Phase 22D) this could now be cross-referenced against, so this is a deliberately
+    richer column than that earlier precedent, not an inconsistency with it.
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    key_prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    key_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="api_keys")

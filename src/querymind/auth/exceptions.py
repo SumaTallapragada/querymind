@@ -66,6 +66,33 @@ class RefreshTokenRevokedError(AuthenticationError):
     """
 
 
+class InvalidApiKeyError(AuthenticationError):
+    """Raised by `AuthenticationService.authenticate_api_key` (Phase 22D) for a key that is
+    malformed (no recognizable `qm_` prefix) or whose hash matches no stored `ApiKey` row at
+    all -- the API-key analogue of `InvalidCredentialsError`/`InvalidTokenError`.
+    """
+
+
+class ApiKeyExpiredError(AuthenticationError):
+    """Raised by `AuthenticationService.authenticate_api_key` when a key's `expires_at` has
+    passed -- the API-key analogue of `TokenExpiredError`.
+    """
+
+
+class ApiKeyRevokedError(AuthenticationError):
+    """Raised by `AuthenticationService.authenticate_api_key` when a key's `revoked_at` is set --
+    the API-key analogue of `RefreshTokenRevokedError`.
+    """
+
+
+class ApiKeyNotFoundError(AuthenticationError):
+    """Raised by `AuthenticationService.revoke_api_key` when no key with the given id exists, or
+    it belongs to a different user than the (non-admin) caller -- deliberately the same outcome
+    for both cases, mirroring `InvalidCredentialsError`'s own "don't let a caller distinguish
+    these" rule: a non-owner should not be able to learn whether a given key id exists at all.
+    """
+
+
 class AuthorizationError(Exception):
     """Base class for every exception raised by `querymind.auth`'s role-checking helpers
     (Phase 22B) -- see this module's own docstring for why this is not an `AuthenticationError`

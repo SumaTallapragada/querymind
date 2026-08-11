@@ -16,17 +16,21 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from querymind.auth.exceptions import (
+    ApiKeyExpiredError,
+    ApiKeyNotFoundError,
+    ApiKeyRevokedError,
     DuplicateUserError,
     ForbiddenRoleError,
     InactiveUserError,
     InsufficientPermissionsError,
+    InvalidApiKeyError,
     InvalidCredentialsError,
     InvalidTokenError,
     RefreshTokenRevokedError,
     TokenExpiredError,
 )
 from querymind.auth.jwt import create_access_token, decode_token
-from querymind.auth.models import RefreshToken, User, UserRole
+from querymind.auth.models import ApiKey, RefreshToken, User, UserRole
 from querymind.auth.service import AuthenticationService
 from tests.auth.conftest import TEST_JWT_SECRET_KEY
 
@@ -40,8 +44,10 @@ class _FakeAuthenticationRepository:
 
     users: dict[int, User] = field(default_factory=dict)
     refresh_tokens: dict[str, RefreshToken] = field(default_factory=dict)
+    api_keys: dict[int, ApiKey] = field(default_factory=dict)
     _next_user_id: int = 1
     _next_refresh_token_id: int = 1
+    _next_api_key_id: int = 1
 
     async def create_user(
         self, *, username: str, email: str, password_hash: str, is_superuser: bool = False
@@ -87,6 +93,53 @@ class _FakeAuthenticationRepository:
         token = self.refresh_tokens.get(jti)
         if token is not None:
             token.revoked = True
+
+    async def create_api_key(
+        self,
+        *,
+        user_id: int,
+        key_prefix: str,
+        key_hash: str,
+        name: str,
+        expires_at: datetime | None,
+    ) -> ApiKey:
+        api_key = ApiKey(
+            user_id=user_id,
+            key_prefix=key_prefix,
+            key_hash=key_hash,
+            name=name,
+            expires_at=expires_at,
+        )
+        api_key.id = self._next_api_key_id
+        api_key.last_used_at = None
+        api_key.revoked_at = None
+        api_key.created_at = datetime.now(UTC)
+        self._next_api_key_id += 1
+        self.api_keys[api_key.id] = api_key
+        return api_key
+
+    async def get_api_key_by_hash(self, key_hash: str) -> ApiKey | None:
+        return next((key for key in self.api_keys.values() if key.key_hash == key_hash), None)
+
+    async def get_api_key_by_id(self, key_id: int) -> ApiKey | None:
+        return self.api_keys.get(key_id)
+
+    async def list_api_keys_for_user(self, user_id: int) -> list[ApiKey]:
+        return sorted(
+            (key for key in self.api_keys.values() if key.user_id == user_id),
+            key=lambda key: key.created_at,
+            reverse=True,
+        )
+
+    async def revoke_api_key(self, key_id: int) -> None:
+        key = self.api_keys.get(key_id)
+        if key is not None and key.revoked_at is None:
+            key.revoked_at = datetime.now(UTC)
+
+    async def touch_api_key_last_used(self, key_id: int) -> None:
+        key = self.api_keys.get(key_id)
+        if key is not None:
+            key.last_used_at = datetime.now(UTC)
 
 
 @pytest.fixture
@@ -596,3 +649,273 @@ class TestRequireAnyRole:
 
         with pytest.raises(InsufficientPermissionsError):
             service.require_any_role(user, UserRole.ADMIN, UserRole.VIEWER)
+
+
+# -- API keys (Phase 22D) -------------------------------------------------------------------
+
+
+class TestCreateApiKey:
+    async def test_returns_the_raw_key_and_its_metadata(
+        self, service: AuthenticationService
+    ) -> None:
+        user = await service.register_user(
+            username="key_alice", email="key_alice@example.com", password="password123"
+        )
+
+        created = await service.create_api_key(user_id=user.id, name="CI pipeline")
+
+        assert created.raw_key.startswith("qm_")
+        assert created.key.name == "CI pipeline"
+        assert created.key.revoked_at is None
+        assert created.key.last_used_at is None
+
+    async def test_only_the_hash_is_persisted_never_the_raw_key(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        user = await service.register_user(
+            username="key_bob", email="key_bob@example.com", password="password123"
+        )
+
+        created = await service.create_api_key(user_id=user.id, name="laptop")
+
+        stored = repository.api_keys[created.key.id]
+        assert stored.key_hash != created.raw_key
+        assert created.raw_key not in stored.key_hash
+
+    async def test_two_keys_for_the_same_user_are_independent(
+        self, service: AuthenticationService
+    ) -> None:
+        user = await service.register_user(
+            username="key_carol", email="key_carol@example.com", password="password123"
+        )
+
+        first = await service.create_api_key(user_id=user.id, name="one")
+        second = await service.create_api_key(user_id=user.id, name="two")
+
+        assert first.raw_key != second.raw_key
+        assert first.key.id != second.key.id
+
+
+class TestAuthenticateApiKey:
+    async def test_resolves_the_owning_user(self, service: AuthenticationService) -> None:
+        user = await service.register_user(
+            username="key_dave", email="key_dave@example.com", password="password123"
+        )
+        created = await service.create_api_key(user_id=user.id, name="resolves")
+
+        resolved = await service.authenticate_api_key(created.raw_key)
+
+        assert resolved.id == user.id
+        assert resolved.username == "key_dave"
+
+    async def test_inherits_the_owners_role_exactly(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        """A key cannot escalate privileges: it resolves to whatever role the owning `User` row
+        has *at authentication time*, not a role fixed at key-creation time -- if the owner is
+        later promoted or demoted, every one of their keys reflects that immediately, the same
+        way a JWT already does via `get_current_user`.
+        """
+        user = await service.register_user(
+            username="key_erin", email="key_erin@example.com", password="password123"
+        )
+        created = await service.create_api_key(user_id=user.id, name="role test")
+        repository.users[user.id].role = UserRole.ADMIN
+
+        resolved = await service.authenticate_api_key(created.raw_key)
+
+        assert resolved.role is UserRole.ADMIN
+
+    async def test_rejects_a_malformed_key(self, service: AuthenticationService) -> None:
+        with pytest.raises(InvalidApiKeyError):
+            await service.authenticate_api_key("not-a-real-key")
+
+    async def test_rejects_a_well_formed_but_unknown_key(
+        self, service: AuthenticationService
+    ) -> None:
+        with pytest.raises(InvalidApiKeyError):
+            await service.authenticate_api_key("qm_" + "a" * 40)
+
+    async def test_rejects_a_revoked_key(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        user = await service.register_user(
+            username="key_frank", email="key_frank@example.com", password="password123"
+        )
+        created = await service.create_api_key(user_id=user.id, name="to revoke")
+        await service.revoke_api_key(requesting_user=user, key_id=created.key.id)
+
+        with pytest.raises(ApiKeyRevokedError):
+            await service.authenticate_api_key(created.raw_key)
+
+    async def test_rejects_an_expired_key(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        user = await service.register_user(
+            username="key_gina", email="key_gina@example.com", password="password123"
+        )
+        created = await service.create_api_key(
+            user_id=user.id, name="expired", expires_at=datetime.now(UTC) - timedelta(seconds=1)
+        )
+
+        with pytest.raises(ApiKeyExpiredError):
+            await service.authenticate_api_key(created.raw_key)
+
+    async def test_rejects_a_key_for_a_now_inactive_user(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        user = await service.register_user(
+            username="key_hank", email="key_hank@example.com", password="password123"
+        )
+        created = await service.create_api_key(user_id=user.id, name="deactivated owner")
+        repository.users[user.id].is_active = False
+
+        with pytest.raises(InactiveUserError):
+            await service.authenticate_api_key(created.raw_key)
+
+    async def test_touches_last_used_at_on_success(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        user = await service.register_user(
+            username="key_ivy", email="key_ivy@example.com", password="password123"
+        )
+        created = await service.create_api_key(user_id=user.id, name="touch test")
+        assert repository.api_keys[created.key.id].last_used_at is None
+
+        await service.authenticate_api_key(created.raw_key)
+
+        assert repository.api_keys[created.key.id].last_used_at is not None
+
+    async def test_does_not_re_touch_last_used_at_within_the_throttle_window(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        user = await service.register_user(
+            username="key_jack", email="key_jack@example.com", password="password123"
+        )
+        created = await service.create_api_key(user_id=user.id, name="throttle test")
+        recent = datetime.now(UTC) - timedelta(seconds=1)
+        repository.api_keys[created.key.id].last_used_at = recent
+
+        await service.authenticate_api_key(created.raw_key)
+
+        assert repository.api_keys[created.key.id].last_used_at == recent
+
+
+class TestListApiKeys:
+    async def test_returns_only_the_given_users_keys(self, service: AuthenticationService) -> None:
+        owner = await service.register_user(
+            username="key_kate", email="key_kate@example.com", password="password123"
+        )
+        other = await service.register_user(
+            username="key_liam", email="key_liam@example.com", password="password123"
+        )
+        await service.create_api_key(user_id=owner.id, name="mine")
+        await service.create_api_key(user_id=other.id, name="not mine")
+
+        keys = await service.list_api_keys(owner.id)
+
+        assert [key.name for key in keys] == ["mine"]
+
+    async def test_never_includes_a_hash_or_raw_key(self, service: AuthenticationService) -> None:
+        user = await service.register_user(
+            username="key_mia", email="key_mia@example.com", password="password123"
+        )
+        await service.create_api_key(user_id=user.id, name="metadata only")
+
+        keys = await service.list_api_keys(user.id)
+
+        assert not hasattr(keys[0], "key_hash")
+
+
+class TestRevokeApiKey:
+    async def test_the_owner_can_revoke_their_own_key(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        user = await service.register_user(
+            username="key_noah", email="key_noah@example.com", password="password123"
+        )
+        created = await service.create_api_key(user_id=user.id, name="mine")
+
+        await service.revoke_api_key(requesting_user=user, key_id=created.key.id)
+
+        assert repository.api_keys[created.key.id].revoked_at is not None
+
+    async def test_an_admin_can_revoke_another_users_key(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        owner = await service.register_user(
+            username="key_olive", email="key_olive@example.com", password="password123"
+        )
+        admin = (
+            await service.register_user(
+                username="key_admin", email="key_admin@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.ADMIN})
+        created = await service.create_api_key(user_id=owner.id, name="owned by olive")
+
+        await service.revoke_api_key(requesting_user=admin, key_id=created.key.id)
+
+        assert repository.api_keys[created.key.id].revoked_at is not None
+
+    async def test_a_non_owner_non_admin_cannot_revoke_someone_elses_key(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        owner = await service.register_user(
+            username="key_paul", email="key_paul@example.com", password="password123"
+        )
+        stranger = (
+            await service.register_user(
+                username="key_stranger", email="key_stranger@example.com", password="password123"
+            )
+        ).model_copy(update={"role": UserRole.ANALYST})
+        created = await service.create_api_key(user_id=owner.id, name="owned by paul")
+
+        with pytest.raises(ApiKeyNotFoundError):
+            await service.revoke_api_key(requesting_user=stranger, key_id=created.key.id)
+        assert repository.api_keys[created.key.id].revoked_at is None
+
+    async def test_revoking_an_unknown_key_id_raises_not_found(
+        self, service: AuthenticationService
+    ) -> None:
+        user = await service.register_user(
+            username="key_quinn", email="key_quinn@example.com", password="password123"
+        )
+
+        with pytest.raises(ApiKeyNotFoundError):
+            await service.revoke_api_key(requesting_user=user, key_id=999_999_999)
+
+    async def test_revoking_an_already_revoked_key_is_idempotent(
+        self, service: AuthenticationService
+    ) -> None:
+        user = await service.register_user(
+            username="key_ruth", email="key_ruth@example.com", password="password123"
+        )
+        created = await service.create_api_key(user_id=user.id, name="double revoke")
+        await service.revoke_api_key(requesting_user=user, key_id=created.key.id)
+
+        await service.revoke_api_key(requesting_user=user, key_id=created.key.id)  # must not raise
+
+
+class TestApiKeyCannotEscalateOrSelfPropagate:
+    """The two guarantees the approved design specifically calls out: a key is capped at its
+    owner's role (never higher), and using a key cannot itself create another key -- the latter
+    is enforced at the API layer (`CurrentUserJwtOnly`, `tests/api/test_api_keys.py`), not here;
+    this class proves the service-layer half: nothing about `authenticate_api_key`'s result is
+    distinguishable from a JWT-resolved `UserRead`, so no code path downstream can even tell the
+    difference to grant it more.
+    """
+
+    async def test_a_viewers_key_resolves_to_viewer_never_more(
+        self, service: AuthenticationService, repository: _FakeAuthenticationRepository
+    ) -> None:
+        user = await service.register_user(
+            username="key_sam", email="key_sam@example.com", password="password123"
+        )
+        repository.users[user.id].role = UserRole.VIEWER
+        created = await service.create_api_key(user_id=user.id, name="viewer key")
+
+        resolved = await service.authenticate_api_key(created.raw_key)
+
+        assert resolved.role is UserRole.VIEWER
+        with pytest.raises(ForbiddenRoleError):
+            service.require_role(resolved, UserRole.ADMIN)

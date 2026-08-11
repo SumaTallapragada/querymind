@@ -4,3 +4,4 @@ export * from "./useHealth";
 export * from "./useMetrics";
 export * from "./useDiagnostics";
 export * from "./useSettings";
+export * from "./useAuth";

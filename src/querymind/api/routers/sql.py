@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from querymind.api.dependencies import QueryMindEngineDep, RequireAnalyst
+from querymind.api.dependencies import QueryMindEngineDep, RateLimitQuery, RequireAnalyst
 from querymind.api.models.request import QuestionRequest
 from querymind.orchestrator.models import GeneratedSqlResult
 
@@ -46,6 +46,9 @@ router = APIRouter(prefix="/query/sql", tags=["query"])
     },
 )
 async def generate_sql(
-    request: QuestionRequest, engine: QueryMindEngineDep, _analyst: RequireAnalyst
+    request: QuestionRequest,
+    engine: QueryMindEngineDep,
+    _analyst: RequireAnalyst,
+    _rate_limit: RateLimitQuery,
 ) -> GeneratedSqlResult:
     return await engine.ask_for_sql(request.question)

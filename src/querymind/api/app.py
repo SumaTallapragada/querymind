@@ -18,14 +18,15 @@ this module, not `main.py`, is now the actual composition root.
 from __future__ import annotations
 
 import structlog
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
+from querymind.api.dependencies import check_general_rate_limit
 from querymind.api.exception_handlers import register_exception_handlers
 from querymind.api.lifespan import lifespan
-from querymind.api.middleware import RequestContextMiddleware
+from querymind.api.middleware import RequestContextMiddleware, SecurityHeadersMiddleware
 from querymind.api.v1.router import api_router
 from querymind.core.config import Settings, get_settings
 from querymind.core.logging import configure_logging
@@ -63,8 +64,27 @@ def create_app(
         allow_headers=["*"],
     )
     app.add_middleware(RequestContextMiddleware)
+    # Added last, so it's the *outermost* wrapper (Starlette middleware runs innermost-first for
+    # requests) -- it sees, and can stamp headers onto, literally every response this process
+    # produces: a normal route response, a mapped-exception `JSONResponse`
+    # (`querymind.api.exception_handlers`), and the generic `Exception` handler's fallback below.
+    app.add_middleware(
+        SecurityHeadersMiddleware,
+        is_production=settings.is_production,
+        auth_path_prefix=f"{settings.api_v1_prefix}/auth",
+    )
 
-    app.include_router(api_router, prefix=settings.api_v1_prefix)
+    # `dependencies=[Depends(check_general_rate_limit)]` here, not on `api_router` itself
+    # (`querymind.api.v1.router`), applies Phase 22D's one coarse, application-wide ceiling to
+    # every route under `settings.api_v1_prefix` in one place -- `/ws/query` below is
+    # unversioned and unauthenticated-at-this-point-in-the-connection, so it can't use this
+    # mechanism at all; it checks the same `RateLimiter` directly instead (see
+    # `querymind.streaming.websocket`'s own docstring).
+    app.include_router(
+        api_router,
+        prefix=settings.api_v1_prefix,
+        dependencies=[Depends(check_general_rate_limit)],
+    )
     # Unversioned, matching the Phase 17 spec's literal `/ws/query` path -- every other
     # streaming endpoint (`POST /query/stream`) lives under `settings.api_v1_prefix` above,
     # alongside the rest of the `/query/*` family.

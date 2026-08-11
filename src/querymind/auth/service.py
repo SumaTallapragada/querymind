@@ -13,16 +13,26 @@ is made exactly once, here, and nowhere else in `querymind.auth`.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
 
 from querymind.auth import jwt as jwt_module
+from querymind.auth.api_keys import (
+    API_KEY_PREFIX,
+    api_key_prefix,
+    generate_raw_api_key,
+    hash_api_key,
+)
 from querymind.auth.exceptions import (
+    ApiKeyExpiredError,
+    ApiKeyNotFoundError,
+    ApiKeyRevokedError,
     DuplicateUserError,
     ForbiddenRoleError,
     InactiveUserError,
     InsufficientPermissionsError,
+    InvalidApiKeyError,
     InvalidCredentialsError,
     InvalidTokenError,
     RefreshTokenRevokedError,
@@ -33,7 +43,13 @@ from querymind.auth.jwt import DEFAULT_REFRESH_TOKEN_EXPIRE_DAYS as _DEFAULT_REF
 from querymind.auth.models import RefreshToken, UserRole
 from querymind.auth.passwords import hash_password, verify_password
 from querymind.auth.repository import AuthenticationRepository
-from querymind.auth.schemas import TokenPair, UserRead
+from querymind.auth.schemas import ApiKeyCreated, ApiKeyRead, TokenPair, UserRead
+
+#: Below this staleness, `authenticate_api_key` skips writing a new `last_used_at` -- a hard-coded
+#: threshold (not `Settings`-configurable, mirroring `DEFAULT_ACCESS_TOKEN_EXPIRE_MINUTES`-style
+#: constants elsewhere in this module) so a busy service client doesn't cause a database write on
+#: every single call it makes.
+_LAST_USED_TOUCH_THRESHOLD = timedelta(minutes=5)
 
 #: `ADMIN` > `ANALYST` > `VIEWER` -- what "ranked" means for `require_role`. A plain module-level
 #: dict, not a method on `UserRole` itself: ranking is an *authorization* concept (Phase 22B),
@@ -254,3 +270,86 @@ class AuthenticationService:
                 f"This action requires one of the following roles: {allowed}; "
                 f"the current user has {user.role.value!r}."
             )
+
+    # -- API keys (Phase 22D) --------------------------------------------------------------
+    #
+    # A second, machine-oriented credential resolving to the *same* `UserRead`/role a JWT would
+    # -- self-service only (a caller creates/lists/revokes keys for their own `user_id`, never
+    # anyone else's; `revoke_api_key` is the one exception, letting an `ADMIN` revoke any key,
+    # per this phase's approved design). No independent scope/permission system: a key is
+    # exactly as privileged as the user who created it, nothing more, so every existing
+    # `require_role`/`require_any_role` check above already applies unchanged to a caller
+    # authenticated via a key instead of a JWT (see `querymind.api.dependencies.get_current_user`
+    # for where the two credential types converge onto one `UserRead`).
+
+    async def create_api_key(
+        self, *, user_id: int, name: str, expires_at: datetime | None = None
+    ) -> ApiKeyCreated:
+        """Issue a fresh API key for `user_id`. Returns the raw key exactly once -- only its
+        SHA-256 hash (`querymind.auth.api_keys.hash_api_key`) is ever persisted; nothing in this
+        method, or anything it calls, stores the raw value anywhere.
+        """
+        raw_key = generate_raw_api_key()
+        row = await self._repository.create_api_key(
+            user_id=user_id,
+            key_prefix=api_key_prefix(raw_key),
+            key_hash=hash_api_key(raw_key),
+            name=name,
+            expires_at=expires_at,
+        )
+        return ApiKeyCreated(raw_key=raw_key, key=ApiKeyRead.model_validate(row))
+
+    async def list_api_keys(self, user_id: int) -> list[ApiKeyRead]:
+        """Every API key belonging to `user_id`, most recently created first -- never another
+        user's keys; there is no "list all keys" admin view in this phase.
+        """
+        rows = await self._repository.list_api_keys_for_user(user_id)
+        return [ApiKeyRead.model_validate(row) for row in rows]
+
+    async def revoke_api_key(self, *, requesting_user: UserRead, key_id: int) -> None:
+        """Revoke `key_id` -- the caller's own key, or any key if the caller is `ADMIN`.
+
+        Raises `ApiKeyNotFoundError` both when `key_id` doesn't exist at all and when it belongs
+        to a different, non-admin caller -- deliberately indistinguishable (see that exception's
+        own docstring). Revoking an already-revoked key is a no-op, not an error (idempotent,
+        matching ordinary REST delete semantics).
+        """
+        row = await self._repository.get_api_key_by_id(key_id)
+        if row is None or (
+            row.user_id != requesting_user.id and not self.is_admin(requesting_user)
+        ):
+            raise ApiKeyNotFoundError(f"No API key with id {key_id}.")
+        await self._repository.revoke_api_key(key_id)
+
+    async def authenticate_api_key(self, raw_key: str) -> UserRead:
+        """Resolve the `User` an API key belongs to, the API-key analogue of `get_current_user`.
+
+        Raises `InvalidApiKeyError` for a malformed or unrecognized key, `ApiKeyRevokedError`/
+        `ApiKeyExpiredError` for a real key that's no longer usable, or `InactiveUserError` if
+        the owning account has since been deactivated -- the same shape `get_current_user`
+        already established for a JWT. Never raises for a stale `last_used_at`; that column is
+        best-effort telemetry, not an authorization input.
+        """
+        if not raw_key.startswith(API_KEY_PREFIX):
+            raise InvalidApiKeyError("This API key is not recognized.")
+        row = await self._repository.get_api_key_by_hash(hash_api_key(raw_key))
+        if row is None:
+            raise InvalidApiKeyError("This API key is not recognized.")
+        if row.revoked_at is not None:
+            raise ApiKeyRevokedError("This API key has been revoked.")
+        if row.expires_at is not None and row.expires_at < datetime.now(UTC):
+            raise ApiKeyExpiredError("This API key has expired.")
+
+        user = await self._repository.get_by_id(row.user_id)
+        if user is None:
+            raise InvalidApiKeyError("This API key's owner no longer exists.")
+        if not user.is_active:
+            raise InactiveUserError("This account is no longer active.")
+
+        if (
+            row.last_used_at is None
+            or datetime.now(UTC) - row.last_used_at > _LAST_USED_TOUCH_THRESHOLD
+        ):
+            await self._repository.touch_api_key_last_used(row.id)
+
+        return UserRead.model_validate(user)

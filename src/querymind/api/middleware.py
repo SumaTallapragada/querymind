@@ -14,12 +14,71 @@ import structlog
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import ASGIApp
 
 from querymind.api.container import ApplicationContainer
 from querymind.observability.logger import StageInstrumentation
 
 REQUEST_ID_HEADER = "X-Request-ID"
 CORRELATION_ID_HEADER = "X-Correlation-ID"
+
+#: Deliberately no `Content-Security-Policy` here (Phase 22D) -- this API only ever returns
+#: JSON (or a `text/event-stream`/WebSocket upgrade), never browser-rendered HTML/JS/CSS of its
+#: own, so a CSP protects nothing on a normal response and actively breaks the one place this
+#: process *does* serve HTML: FastAPI's own `/docs` (Swagger UI) and `/redoc`, both of which
+#: load their JS/CSS from a CDN (`cdn.jsdelivr.net`) by default. `X-Frame-Options`/`frame-
+#: ancestors` are skipped for the same reason this project's actual browser-rendered surface
+#: (the React app, served by nginx) is where clickjacking protection belongs --
+#: `frontend/nginx.conf` carries both. Strict-Transport-Security is added conditionally, below,
+#: only when `Settings.is_production` -- see `SecurityHeadersMiddleware`'s own docstring.
+_BASELINE_HEADERS: dict[str, str] = {
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Permissions-Policy": "geolocation=(), camera=(), microphone=()",
+}
+
+_HSTS_HEADER = "Strict-Transport-Security"
+_HSTS_VALUE = "max-age=31536000; includeSubDomains"
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Adds baseline security headers to every API response.
+
+    `is_production` is read once, from `Settings.is_production` (Phase 1's existing "what
+    environment is this" indicator -- reused rather than a duplicate `Settings` field), at
+    construction time, not per-request -- the environment doesn't change while a process is
+    running. Strict-Transport-Security is emitted only then: sending it over plain HTTP in
+    development would tell a browser to remember an HTTPS-only policy for a host that doesn't
+    even serve HTTPS, which is actively wrong, not merely unnecessary.
+
+    `auth_path_prefix` (e.g. `/api/v1/auth`, built from `Settings.api_v1_prefix` so this stays
+    correct if that's ever reconfigured) gets `Cache-Control: no-store` on top of the baseline
+    set -- every response under it can carry a fresh access/refresh token pair or the current
+    user's identity, none of which should ever be cached by a browser or an intermediary proxy.
+    """
+
+    def __init__(self, app: ASGIApp, *, is_production: bool, auth_path_prefix: str) -> None:
+        super().__init__(app)
+        self._is_production = is_production
+        self._auth_path_prefix = auth_path_prefix
+
+    async def dispatch(
+        self,
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        response = await call_next(request)
+
+        for name, value in _BASELINE_HEADERS.items():
+            response.headers[name] = value
+
+        if self._is_production:
+            response.headers[_HSTS_HEADER] = _HSTS_VALUE
+
+        if request.url.path.startswith(self._auth_path_prefix):
+            response.headers["Cache-Control"] = "no-store"
+
+        return response
 
 
 class RequestContextMiddleware(BaseHTTPMiddleware):

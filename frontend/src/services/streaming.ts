@@ -9,10 +9,32 @@
  * `GET` requests with no body, but `POST /query/stream` needs a JSON `{"question": ...}` body.
  * `streamQuerySse` instead reads the `fetch` response body as a stream and parses the same
  * `event:`/`data:` framing `querymind.streaming.sse._format_sse_frame` writes.
+ *
+ * Authentication (Phase 22D-7): both `POST /query/stream` and `/ws/query` require at least the
+ * `analyst` role (`querymind.streaming.sse`/`.websocket`'s own docstrings) -- this module reads
+ * the current *access* token directly from `useAuthStore.getState()`, the exact same source
+ * `services/api.ts`'s `request()` already uses, rather than duplicating token storage or adding
+ * a second auth store. Only the access token is ever sent here; the refresh token never leaves
+ * `authStore`/`services/api.ts`'s own refresh call. SSE attaches it the ordinary way
+ * (`Authorization: Bearer <token>` header, since `fetch` can set arbitrary headers); a browser's
+ * native `WebSocket` constructor cannot set custom headers at all, so `/ws/query` -- which
+ * already accepts a `?token=` query parameter for exactly this reason, see
+ * `querymind.streaming.websocket._authenticate_and_authorize`'s own docstring -- gets the token
+ * appended to its URL instead. Neither transport attempts an automatic refresh-and-retry on
+ * authentication failure the way `services/api.ts` does for ordinary requests: `api.ts`'s dance
+ * retries one already-complete request/response cycle, but a rejected SSE call fails before any
+ * stream begins and a rejected WebSocket handshake closes before `.accept()`, so "retry" here
+ * would mean re-issuing the whole call with a freshly refreshed token -- a real behavior change,
+ * not the smallest correct fix for a frontend that predates Phase 22C authentication entirely.
+ * Both failure cases already surface safely today (via this module's own `onError`/`throw`
+ * handling below), just now for the *legitimate* reason of a missing/expired token instead of
+ * unconditionally. If in-flight token refresh for an open streaming connection is ever needed,
+ * it belongs in a dedicated follow-up, not folded into this fix.
  */
 
 import type { PipelineEvent } from "@/models";
 import { isTerminalEvent } from "@/models";
+import { useAuthStore } from "@/store/authStore";
 import { API_BASE_URL } from "./api";
 
 export interface StreamHandlers {
@@ -45,9 +67,12 @@ export function streamQuerySse(question: string, handlers: StreamHandlers): Stre
 
   void (async () => {
     try {
+      const accessToken = useAuthStore.getState().accessToken;
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
       const response = await fetch(`${API_BASE_URL}/query/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({ question }),
         signal: controller.signal,
       });
@@ -83,9 +108,15 @@ export function streamQuerySse(question: string, handlers: StreamHandlers): Stre
 
 function buildWebSocketUrl(path: string): string {
   const override = import.meta.env.VITE_WS_BASE_URL as string | undefined;
-  if (override !== undefined) return `${override}${path}`;
+  // The browser's native `WebSocket` constructor cannot set an `Authorization` header (or any
+  // custom header) -- `?token=` is the existing, already-implemented fallback
+  // `querymind.streaming.websocket._authenticate_and_authorize` accepts for exactly this reason.
+  // Never the refresh token: only the short-lived access token is ever placed in a URL.
+  const accessToken = useAuthStore.getState().accessToken;
+  const query = accessToken ? `?token=${encodeURIComponent(accessToken)}` : "";
+  if (override !== undefined) return `${override}${path}${query}`;
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${window.location.host}${path}`;
+  return `${protocol}//${window.location.host}${path}${query}`;
 }
 
 export function streamQueryWebSocket(question: string, handlers: StreamHandlers): StreamHandle {

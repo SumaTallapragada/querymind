@@ -114,6 +114,31 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = Field(default=30, gt=0)
     refresh_token_expire_days: int = Field(default=14, gt=0)
 
+    # -- Security (Phase 22D) -------------------------------------------------
+    # `trust_proxy_headers` gates whether `X-Forwarded-For`/`X-Real-IP` are ever read for client
+    # identification (audit logging, rate limiting) -- see `querymind.api.client_info`'s own
+    # docstring for why this defaults to `False` and must stay an explicit opt-in: those headers
+    # are only trustworthy when every path to this process actually goes through a proxy that
+    # sets them (nginx does, per `frontend/nginx.conf`), which requires the app service to have
+    # no other, unproxied way in -- `docker-compose.yml`'s Phase 22D change (no direct host-port
+    # publish for `app`) is what makes turning this on meaningful in that deployment.
+    trust_proxy_headers: bool = Field(default=False)
+
+    # -- Rate limiting (Phase 22D) ---------------------------------------------
+    # Explicit, named limits rather than a generic rule engine -- this project's own "smallest
+    # architecture" principle (see `querymind.security.rate_limiter`'s module docstring):
+    # exactly the five scopes the approved design calls for, each a plain integer a caller can
+    # read at a glance, not a configurable table of scope/window/capacity tuples nobody but this
+    # phase will ever populate. `rate_limit_enabled` defaults `True` so dev/CI exercise the real
+    # `InMemoryTokenBucketRateLimiter` by default, not its `NoOpRateLimiter` bypass; set `False`
+    # locally if a tight limit (login's 5/minute, especially) gets in the way of manual testing.
+    rate_limit_enabled: bool = Field(default=True)
+    rate_limit_general_per_minute: int = Field(default=300, gt=0)
+    rate_limit_login_per_minute: int = Field(default=5, gt=0)
+    rate_limit_register_per_hour: int = Field(default=3, gt=0)
+    rate_limit_refresh_per_minute: int = Field(default=20, gt=0)
+    rate_limit_query_per_minute: int = Field(default=30, gt=0)
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:

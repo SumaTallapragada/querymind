@@ -107,12 +107,17 @@ etc. to validate the file's syntax; nothing is ever started). Never runs `docker
 1. Writes a real `.env` from GitHub Secrets.
 2. `docker compose up -d --build` — the actual stack, `db` → `app` → `frontend`.
 3. Three explicit wait steps (not just relying on Compose's own `depends_on` gating): PostgreSQL
-   healthy, backend healthy *and* answering `GET /api/v1/health`, frontend healthy *and* serving.
+   healthy, backend healthy *and* answering `GET /api/v1/health/live` (checked from *inside* the
+   `app` container via `docker compose exec` — Phase 22D-6 removed its host port, so the runner
+   can no longer curl it directly), frontend healthy *and* serving.
 4. `uv run pytest -q` — the **full** suite, no exclusions, run on the runner directly against
    the stack's published Postgres port (mirrors how local development already runs `uv run
    pytest` against a `docker compose`-provisioned database).
-5. Networking validation: confirms `GET /api/v1/health` returns byte-identical output whether
-   requested directly (`:8000`) or through the frontend's reverse proxy (`:8080`).
+5. Networking validation (Phase 22D-6): confirms `app:8000` is reachable *from inside the
+   `frontend` container* (over the `querymind` network, the same path nginx itself uses) and
+   that its response is byte-identical to what the frontend's reverse proxy (`:8080`) returns —
+   then, separately, confirms the *runner* genuinely cannot reach `localhost:8000` at all
+   (connection failure is the expected, passing outcome, not a workflow bug).
 6. SSE validation: confirms a `pipeline_started` frame arrives from `POST /api/v1/query/stream`
    through the proxy.
 7. WebSocket validation: a small inline Python client confirms a `pipeline_started` frame

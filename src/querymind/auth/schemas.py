@@ -80,6 +80,45 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
+class ApiKeyCreate(BaseModel):
+    """Input to `AuthenticationService.create_api_key` / `POST /auth/api-keys`."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100)
+    expires_at: datetime | None = None
+
+
+class ApiKeyRead(BaseModel):
+    """An `ApiKey` as returned to a caller -- every field except `key_hash`, which never leaves
+    `querymind.auth` in any form (mirrors `UserRead` excluding `password_hash`). `key_prefix` is
+    the only key-identifying value here; the raw key itself is never in this schema at all --
+    see `ApiKeyCreated` for the one response that carries it.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", from_attributes=True)
+
+    id: int
+    key_prefix: str
+    name: str
+    created_at: datetime
+    expires_at: datetime | None
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+
+
+class ApiKeyCreated(BaseModel):
+    """The result of `POST /auth/api-keys` -- the *only* schema that ever carries a raw API key,
+    returned exactly once, at creation. Nothing in `querymind.auth` constructs this a second
+    time for the same key; `ApiKeyRead` (metadata only) is what every later read returns.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    raw_key: str
+    key: ApiKeyRead
+
+
 class AuthenticationResult(BaseModel):
     """Bundles a `UserRead` with a `TokenPair` -- provided for a future login endpoint (Phase
     22A Part 2) that wants to return both in one response body. Not produced by any

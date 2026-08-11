@@ -52,6 +52,13 @@ from querymind.query_library import QueryLibraryRegistry
 from querymind.result_formatter import ResultFormatterEngine
 from querymind.retrieval import RetrievalEngine
 from querymind.schema_linker import SchemaLinker
+from querymind.security.audit import AuditLogger
+from querymind.security.rate_limiter import (
+    InMemoryTokenBucketRateLimiter,
+    NoOpRateLimiter,
+    RateLimiter,
+)
+from querymind.security.repository import AuditRepository
 from querymind.sql_execution import DatabaseConnectionProvider, SQLExecutionEngine
 from querymind.sql_generation import SQLGenerationEngine
 from querymind.sql_repair import SQLRepairEngine, SQLRepairLLMAdapter
@@ -88,6 +95,9 @@ class ApplicationContainer:
     event_bus: EventBus
     authentication_repository: AuthenticationRepository
     authentication_service: AuthenticationService
+    audit_repository: AuditRepository
+    audit_logger: AuditLogger
+    rate_limiter: RateLimiter
 
     @staticmethod
     def build(
@@ -188,6 +198,22 @@ class ApplicationContainer:
             refresh_token_expire_days=settings.refresh_token_expire_days,
         )
 
+        # Phase 22D: its own session factory over the same `engine`, mirroring
+        # `authentication_session_factory` immediately above -- not a real duplicated resource
+        # (a session factory is a stateless, near-free wrapper), just avoiding a layering
+        # inversion the same way that comment already explains.
+        audit_session_factory = create_session_factory(engine)
+        audit_repository = AuditRepository(audit_session_factory)
+        audit_logger = AuditLogger(audit_repository)
+
+        # `NoOpRateLimiter` when disabled, not a conditional inside every dependency that uses
+        # it -- see `querymind.security.rate_limiter`'s own docstring: both implementations
+        # share one call shape, so every rate-limit dependency in `querymind.api.dependencies`
+        # calls `.check(...)` unconditionally regardless of which one this process is running.
+        rate_limiter: RateLimiter = (
+            InMemoryTokenBucketRateLimiter() if settings.rate_limit_enabled else NoOpRateLimiter()
+        )
+
         return ApplicationContainer(
             settings=settings,
             engine=engine,
@@ -213,6 +239,9 @@ class ApplicationContainer:
             event_bus=EventBus(),
             authentication_repository=authentication_repository,
             authentication_service=authentication_service,
+            audit_repository=audit_repository,
+            audit_logger=audit_logger,
+            rate_limiter=rate_limiter,
         )
 
     async def dispose(self) -> None:

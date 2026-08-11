@@ -94,11 +94,20 @@ jobs:
           echo "::error::PostgreSQL never became healthy" && exit 1
 
       - name: Wait for the backend health endpoint
+        # Phase 22D-6: `app` no longer publishes a host port at all (hardened -- see
+        # docker-compose.yml's own comment), so this can no longer curl `localhost:8000`
+        # directly from the runner; `docker compose exec` runs the check *inside* the `app`
+        # container instead, against its own loopback -- reachable regardless of host
+        # publishing, and mirrors Dockerfile.backend's own HEALTHCHECK (`python -c
+        # "import urllib.request..."`, since the image has neither curl nor wget).
         run: |
           for _ in $(seq 1 30); do
             status=$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q app)")
             echo "app: $status"
-            if [ "$status" = "healthy" ] && curl -sf http://localhost:8000/api/v1/health >/dev/null; then
+            if [ "$status" = "healthy" ] && docker compose exec -T app python -c "
+          import urllib.request
+          urllib.request.urlopen('http://localhost:8000/api/v1/health/live').read()
+          " >/dev/null 2>&1; then
               exit 0
             fi
             sleep 5
@@ -127,33 +136,82 @@ jobs:
         # database (see docs/getting-started.md).
         run: uv run pytest -q
 
-      - name: Validate Docker networking (frontend -> backend, same-origin)
+      - name: Validate Docker networking (app reachable from frontend; nginx proxies identically)
+        # Phase 22D-6: `app:8000` is internal-only now, so "direct" access is exercised from
+        # *inside* the `frontend` container (over the `querymind` network, the same path nginx
+        # itself uses) rather than from the runner -- proves both that `app` is reachable by
+        # hostname from another container (DNS + connectivity) and that nginx's proxy returns
+        # byte-identical output to hitting `app` directly, without ever assuming host port 8000
+        # is reachable (see the new "Verify the backend is not reachable from the host" step
+        # right below, which proves the opposite on purpose).
         run: |
-          direct=$(curl -sf http://localhost:8000/api/v1/health)
-          proxied=$(curl -sf http://localhost:8080/api/v1/health)
-          if [ "$direct" != "$proxied" ]; then
-            echo "::error::Response via the frontend reverse proxy differs from the backend directly"
-            echo "direct:  $direct"
-            echo "proxied: $proxied"
+          internal=$(docker compose exec -T frontend curl -sf http://app:8000/api/v1/health/live)
+          proxied=$(curl -sf http://localhost:8080/api/v1/health/live)
+          if [ "$internal" != "$proxied" ]; then
+            echo "::error::Response via the frontend reverse proxy differs from app:8000 directly (from inside the frontend container)"
+            echo "internal: $internal"
+            echo "proxied:  $proxied"
             exit 1
           fi
-          echo "Frontend -> backend proxying confirmed identical to a direct request."
+          echo "Frontend -> backend proxying confirmed identical to a direct in-network request."
+
+      - name: Verify the backend is NOT reachable directly from the host
+        # The core acceptance criterion of Phase 22D-6: `app` must not answer on the runner's
+        # own localhost:8000 at all -- only via the frontend proxy (:8080) or from another
+        # container on the `querymind` network (proven above). A short --max-time bounds this
+        # in case the port is unexpectedly open and slow to respond, rather than hanging.
+        run: |
+          if curl -sf --max-time 3 http://localhost:8000/api/v1/health/live >/dev/null 2>&1; then
+            echo "::error::Backend responded on host port 8000 -- it must only be reachable via the frontend proxy or the Docker network (Phase 22D-6)."
+            exit 1
+          fi
+          echo "Confirmed: host port 8000 is not reachable from the runner (expected -- app is internal-only)."
+
+      - name: Create a CI test user and obtain an access token
+        # Phase 22D-7: both streaming endpoints require at least the `analyst` role
+        # (`querymind.streaming.sse`/`.websocket`) -- the two validation steps below were
+        # calling them with no credential at all and would have failed the moment RBAC was
+        # added to these routes. Uses the project's own registration/login flow (a fresh
+        # account is created and every registered account defaults to `analyst`, per
+        # `AuthenticationService.register_user`/`README.md`'s own "Authorization" section) --
+        # no GitHub secret needed, since this is disposable, per-run data torn down with the
+        # rest of the stack (`docker compose down -v` at the end of this job). The username is
+        # suffixed with the run/attempt id so two concurrent or retried runs never collide.
+        # `::add-mask::` stops the token from ever appearing in this job's own logs, even if a
+        # later step happens to print a response body that contains it.
+        run: |
+          username="ci_streaming_test_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          curl -sf -X POST http://localhost:8080/api/v1/auth/register \
+            -H "Content-Type: application/json" \
+            -d "{\"username\": \"$username\", \"email\": \"$username@example.com\", \"password\": \"ci-streaming-test-password-1\"}" \
+            >/dev/null
+          access_token=$(curl -sf -X POST http://localhost:8080/api/v1/auth/login \
+            -H "Content-Type: application/json" \
+            -d "{\"username\": \"$username\", \"password\": \"ci-streaming-test-password-1\"}" \
+            | python -c "import sys, json; print(json.load(sys.stdin)['access_token'])")
+          echo "::add-mask::$access_token"
+          echo "ACCESS_TOKEN=$access_token" >> "$GITHUB_ENV"
 
       - name: Validate the SSE endpoint (through the reverse proxy)
         run: |
           frame=$(timeout 15 curl -N -sS -X POST http://localhost:8080/api/v1/query/stream \
             -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
             -d '{"question": "How many rows are in the customers table?"}' | head -n 5)
           echo "$frame"
           echo "$frame" | grep -q "^event: pipeline_started" || { echo "::error::No pipeline_started SSE frame received"; exit 1; }
 
       - name: Validate the WebSocket endpoint (through the reverse proxy)
+        # `?token=` -- the browser's native WebSocket can't set an Authorization header, so
+        # `querymind.streaming.websocket._authenticate_and_authorize` accepts the token this way
+        # too; the frontend client (`services/streaming.ts`) uses the exact same mechanism.
         run: |
           uv run python -c "
-          import asyncio, json, sys, websockets
+          import asyncio, json, os, sys, websockets
 
           async def main() -> None:
-              async with websockets.connect('ws://localhost:8080/ws/query') as ws:
+              token = os.environ['ACCESS_TOKEN']
+              async with websockets.connect(f'ws://localhost:8080/ws/query?token={token}') as ws:
                   await ws.send(json.dumps({'question': 'How many rows are in the customers table?'}))
                   first = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
                   if first['event_type'] != 'pipeline_started':
