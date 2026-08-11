@@ -13,8 +13,8 @@ import pytest
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 
+from querymind.api.app import create_app
 from querymind.core.config import Settings
-from querymind.main import create_app
 
 
 @pytest.fixture

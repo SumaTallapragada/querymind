@@ -49,33 +49,50 @@ jobs:
         run: uv run mypy src
 
       - name: Backend unit tests (PostgreSQL-dependent tests excluded)
-        # Two exclusion layers, both established by inspecting which tests actually fail
-        # without a reachable database (verified locally: 33 tests, 0 source changes made to
-        # separate them -- no pytest markers exist in this codebase and adding any would be a
-        # test-source change, out of scope for a CI-only phase):
-        #   1. --ignore-glob drops every tests/**/test_integration.py file outright -- each one
-        #      is, by this codebase's own naming convention and docstrings, entirely dedicated
-        #      to real-Postgres end-to-end testing (22 of the 33 tests).
-        #   2. The remaining 11 are individual DB-touching tests living inside otherwise-hermetic
-        #      files (test_execution.py, test_diagnostics.py, test_health.py, test_connection.py,
-        #      test_executor.py) alongside mocked unit tests in the same file -- --deselect
-        #      removes exactly those, by node ID, leaving every mocked test in those same files
-        #      running here as normal.
-        # All 33 run for real in integration.yml, against a real, Compose-provisioned Postgres.
+        # Three exclusion layers, all established by actually running this exact command
+        # locally with no `.env` file present at all (this job, unlike integration.yml, never
+        # starts Postgres or writes one) and inspecting every resulting error -- no pytest
+        # markers exist in this codebase and adding any would be a test-source change, out of
+        # scope for a CI-only phase:
+        #   1. --ignore-glob drops every tests/**/test_*integration*.py file outright -- each
+        #      one is, by this codebase's own naming convention and docstrings, entirely
+        #      dedicated to real-Postgres end-to-end testing. Broadened from the narrower
+        #      tests/**/test_integration.py (Phase 19D's original pattern) to also catch
+        #      tests/api/test_auth_integration.py (Phase 22A/22B's real-DB auth suite), whose
+        #      name doesn't fit that literal pattern -- still matches every other
+        #      test_integration.py file unchanged.
+        #   2. --ignore drops two more whole files that don't fit the glob above but are just
+        #      as entirely real-DB (every test in each, confirmed by their own docstrings and by
+        #      the exact per-file test count matching the exact error count with no `.env`):
+        #      tests/auth/test_repository.py (Phase 22A) and tests/security/test_repository.py
+        #      (Phase 22D-2, `AuditRepository`).
+        #   3. The rest are individual DB-touching tests living inside otherwise-hermetic files
+        #      (test_execution.py, test_diagnostics.py, test_health.py, test_connection.py,
+        #      test_executor.py, test_error_handling_security.py) alongside mocked unit tests in
+        #      the same file -- --deselect removes exactly those, by node ID, leaving every
+        #      mocked test in those same files running here as normal.
+        # Every excluded test runs for real in integration.yml, against a real,
+        # Compose-provisioned Postgres.
         run: |
           uv run pytest -q --no-cov \
-            --ignore-glob='tests/**/test_integration.py' \
+            --ignore-glob='tests/**/test_*integration*.py' \
+            --ignore tests/auth/test_repository.py \
+            --ignore tests/security/test_repository.py \
             --deselect tests/api/test_execution.py::test_executes_read_only_sql_against_the_real_database \
             --deselect 'tests/observability/test_diagnostics.py::TestDatabaseConnectivityCheck::test_a_real_reachable_database_passes' \
+            --deselect 'tests/observability/test_diagnostics.py::TestDatabaseConnectivityCheck::test_never_executes_sql' \
             --deselect 'tests/observability/test_health.py::TestDatabaseReachable::test_a_real_reachable_database_is_healthy' \
+            --deselect 'tests/observability/test_health.py::TestDatabaseReachable::test_never_executes_sql' \
             --deselect 'tests/observability/test_health.py::TestOverallStatus::test_overall_is_healthy_only_if_every_check_is_healthy' \
             --deselect 'tests/sql_execution/test_connection.py::TestAcquire::test_yields_a_working_connection' \
             --deselect 'tests/sql_execution/test_connection.py::TestAcquire::test_connection_is_read_only' \
             --deselect 'tests/sql_execution/test_connection.py::TestAcquire::test_caller_exceptions_are_not_reclassified_as_connection_errors' \
+            --deselect 'tests/sql_execution/test_connection.py::TestAcquire::test_database_name_reflects_the_engine' \
             --deselect 'tests/sql_execution/test_executor.py::TestExecute::test_a_real_select_returns_column_names_and_rows' \
             --deselect 'tests/sql_execution/test_executor.py::TestExecute::test_a_query_with_no_rows_still_reports_columns' \
             --deselect 'tests/sql_execution/test_executor.py::TestExecute::test_exceeding_the_timeout_raises_execution_timeout_error' \
-            --deselect 'tests/sql_execution/test_executor.py::TestExecute::test_a_database_error_raises_execution_failure_error'
+            --deselect 'tests/sql_execution/test_executor.py::TestExecute::test_a_database_error_raises_execution_failure_error' \
+            --deselect 'tests/api/test_error_handling_security.py::TestDatabaseConnectionFailureNeverLeaksCredentials::test_a_wrong_password_error_never_contains_the_attempted_password'
 
   docker-build:
     name: Build backend Docker image
