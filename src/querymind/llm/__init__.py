@@ -17,6 +17,7 @@ from querymind.llm.cache import LLMResponseCache, NoOpLLMResponseCache
 from querymind.llm.client import HTTPTransport, HttpxTransport
 from querymind.llm.config import (
     DEFAULT_CLAUDE_BASE_URL,
+    DEFAULT_GROQ_BASE_URL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_RETRY_COUNT,
     DEFAULT_TEMPERATURE,
@@ -41,11 +42,19 @@ from querymind.llm.models import (
     TokenUsage,
 )
 from querymind.llm.parser import ResponseParser
-from querymind.llm.providers import ClaudeProvider, ClaudeResponseParser, ProviderClient
+from querymind.llm.providers import (
+    ClaudeProvider,
+    ClaudeResponseParser,
+    GroqProvider,
+    GroqResponseParser,
+    ProviderClient,
+    build_llm_provider,
+)
 from querymind.llm.retry import RetryPolicy
 
 __all__ = [
     "DEFAULT_CLAUDE_BASE_URL",
+    "DEFAULT_GROQ_BASE_URL",
     "DEFAULT_MAX_TOKENS",
     "DEFAULT_RETRY_COUNT",
     "DEFAULT_TEMPERATURE",
@@ -54,6 +63,8 @@ __all__ = [
     "ClaudeResponseParser",
     "FinishReason",
     "GenerationMetrics",
+    "GroqProvider",
+    "GroqResponseParser",
     "HTTPTransport",
     "HttpxTransport",
     "InMemoryMetricsCollector",
@@ -75,4 +86,5 @@ __all__ = [
     "RetryExhaustedError",
     "RetryPolicy",
     "TokenUsage",
+    "build_llm_provider",
 ]

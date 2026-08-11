@@ -37,7 +37,7 @@ from querymind.db.engine import create_engine
 from querymind.db.session import create_session_factory
 from querymind.llm.adapter import LLMAdapter
 from querymind.llm.client import HTTPTransport
-from querymind.llm.providers.claude import ClaudeProvider
+from querymind.llm.providers import build_llm_provider
 from querymind.metadata import ColumnDictionary, MetadataExtractor, MetadataRegistry
 from querymind.metadata.relationships import RelationshipGraph
 from querymind.models.base import Base
@@ -105,10 +105,10 @@ class ApplicationContainer:
     ) -> ApplicationContainer:
         """Construct every engine from `settings`. Pure construction -- see module docstring.
 
-        `llm_transport` is `None` in production (`ClaudeProvider` then
-        opens its own real `HttpxTransport`); tests pass an
-        `httpx.MockTransport`-backed one so the fully-wired app never
-        makes a real network call, mirroring
+        `llm_transport` is `None` in production (the concrete provider
+        `build_llm_provider` selects then opens its own real
+        `HttpxTransport`); tests pass an `httpx.MockTransport`-backed one
+        so the fully-wired app never makes a real network call, mirroring
         `tests/orchestrator/conftest.py`'s `make_pipeline_runner(handler=...)`.
         """
         engine = create_engine(settings)
@@ -132,7 +132,7 @@ class ApplicationContainer:
 
         llm_provider_config = settings.llm_provider_config
         llm_adapter = LLMAdapter(
-            ClaudeProvider(llm_provider_config, transport=llm_transport), llm_provider_config
+            build_llm_provider(llm_provider_config, transport=llm_transport), llm_provider_config
         )
 
         sql_generation_engine = SQLGenerationEngine(llm_adapter)

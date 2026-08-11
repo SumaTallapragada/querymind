@@ -29,9 +29,10 @@ class _FrozenModel(BaseModel):
 
 
 class LLMProvider(str, Enum):
-    """The LLM providers `querymind.llm.providers` implements. Currently just Claude."""
+    """The LLM providers `querymind.llm.providers` implements."""
 
     CLAUDE = "claude"
+    GROQ = "groq"
 
 
 class FinishReason(str, Enum):
@@ -56,7 +57,7 @@ class LLMRequest(_FrozenModel):
         min_length=1, description="The full compiled prompt text, sent to the provider verbatim."
     )
     model: str = Field(description="Provider-specific model identifier, e.g. 'claude-sonnet-5'.")
-    temperature: float = Field(ge=0.0, le=1.0)
+    temperature: float = Field(ge=0.0, le=2.0)
     max_tokens: int = Field(gt=0)
 
 

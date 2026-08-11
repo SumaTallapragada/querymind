@@ -39,6 +39,18 @@ def _metrics(**overrides: object) -> GenerationMetrics:
     return GenerationMetrics(**defaults)  # type: ignore[arg-type]
 
 
+class TestLLMProvider:
+    def test_claude_value(self) -> None:
+        assert LLMProvider.CLAUDE.value == "claude"
+
+    def test_groq_value(self) -> None:
+        assert LLMProvider.GROQ.value == "groq"
+
+    def test_generation_metrics_accepts_groq(self) -> None:
+        metrics = _metrics(provider=LLMProvider.GROQ)
+        assert metrics.provider is LLMProvider.GROQ
+
+
 class TestLLMRequest:
     def test_valid_request_constructs(self) -> None:
         request = _request()
@@ -48,10 +60,19 @@ class TestLLMRequest:
         with pytest.raises(ValidationError):
             _request(prompt="")
 
-    @pytest.mark.parametrize("temperature", [-0.1, 1.1])
+    @pytest.mark.parametrize("temperature", [-0.1, 2.1])
     def test_rejects_temperature_out_of_range(self, temperature: float) -> None:
         with pytest.raises(ValidationError):
             _request(temperature=temperature)
+
+    @pytest.mark.parametrize("temperature", [0.0, 1.0, 1.5, 2.0])
+    def test_accepts_temperature_across_the_full_widened_range(self, temperature: float) -> None:
+        # Regression lock for the generic (provider-agnostic) temperature range fix: widened
+        # from `le=1.0` to `le=2.0` to match `LLMProviderConfig.temperature`/
+        # `Settings.llm_temperature` -- otherwise a config that accepted temperature=1.5 would
+        # still fail here, inside `LLMAdapter.generate`, when the request is actually built.
+        request = _request(temperature=temperature)
+        assert request.temperature == temperature
 
     @pytest.mark.parametrize("max_tokens", [0, -1])
     def test_rejects_non_positive_max_tokens(self, max_tokens: int) -> None:

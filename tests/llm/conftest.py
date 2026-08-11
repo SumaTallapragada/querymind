@@ -96,6 +96,50 @@ def make_claude_error_body(
     return {"type": "error", "error": {"type": error_type, "message": message}}
 
 
+def make_groq_config(**overrides: object) -> LLMProviderConfig:
+    defaults: dict[str, object] = {
+        "provider": LLMProvider.GROQ,
+        "model": "llama-3.3-70b-versatile",
+        "api_key": SecretStr("test-groq-api-key"),
+    }
+    defaults.update(overrides)
+    return LLMProviderConfig(**defaults)  # type: ignore[arg-type]
+
+
+def make_groq_success_body(
+    *,
+    text: str = "SELECT 1;",
+    model: str = "llama-3.3-70b-versatile",
+    finish_reason: str = "stop",
+    prompt_tokens: int = 10,
+    completion_tokens: int = 5,
+) -> dict[str, Any]:
+    return {
+        "id": "chatcmpl-01",
+        "object": "chat.completion",
+        "created": 1_700_000_000,
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text},
+                "finish_reason": finish_reason,
+            }
+        ],
+        "usage": {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        },
+    }
+
+
+def make_groq_error_body(
+    *, message: str = "something went wrong", error_type: str = "api_error"
+) -> dict[str, Any]:
+    return {"error": {"type": error_type, "message": message}}
+
+
 class FakeTransport:
     """An `HTTPTransport` that returns a scripted sequence of `(status_code, body)` responses."""
 
@@ -136,6 +180,11 @@ def config() -> LLMProviderConfig:
     return make_config()
 
 
+@pytest.fixture
+def groq_config() -> LLMProviderConfig:
+    return make_groq_config()
+
+
 class RecordingSleep:
     """A `SleepFn` that records requested delays instead of actually sleeping."""
 
@@ -160,4 +209,7 @@ __all__ = [
     "make_claude_success_body",
     "make_compiled_prompt",
     "make_config",
+    "make_groq_config",
+    "make_groq_error_body",
+    "make_groq_success_body",
 ]

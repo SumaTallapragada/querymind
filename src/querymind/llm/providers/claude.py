@@ -98,7 +98,7 @@ class ClaudeProvider:
         self._parser = parser or ClaudeResponseParser()
 
     def generate(self, request: LLMRequest) -> LLMResponse:
-        url = f"{self._config.base_url.rstrip('/')}{_MESSAGES_ENDPOINT}"
+        url = f"{self._config.resolved_base_url.rstrip('/')}{_MESSAGES_ENDPOINT}"
         headers = {
             "x-api-key": self._config.api_key.get_secret_value(),
             "anthropic-version": _ANTHROPIC_VERSION,

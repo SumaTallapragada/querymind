@@ -361,7 +361,7 @@ for how events get from `PipelineRunner` to the wire.
 | Migrations | Alembic (async) |
 | Data models | Pydantic v2 — every cross-phase model is `frozen=True`, `extra="forbid"` |
 | SQL parsing | `sqlglot` — every AST-level check (validation, repair, execution guard) |
-| LLM provider | Anthropic Claude, via a raw `httpx` client (no vendor SDK dependency) |
+| LLM provider | Anthropic Claude or Groq, via a raw `httpx` client (no vendor SDK dependency) — see [LLM provider configuration](#llm-provider-configuration) |
 | Config | `pydantic-settings`, environment-driven, no hardcoded values |
 | Logging | `structlog`, JSON in production / console in development |
 | Dependency management | [`uv`](https://docs.astral.sh/uv/) |
@@ -369,6 +369,44 @@ for how events get from `PipelineRunner` to the wire.
 | Static typing | MyPy, `strict = true` |
 | Testing | pytest, `pytest-asyncio`, `pytest-cov`, `httpx.MockTransport` for the LLM |
 | Synthetic data | Faker-driven seed generators for a full e-commerce dataset |
+
+## LLM provider configuration
+
+QueryMind's LLM Adapter (`querymind.llm`) is provider-agnostic — `LLMAdapter`, the retry policy,
+the metrics collector, and the whole pipeline downstream of it (prompt compilation, SQL
+generation, repair) know nothing about which provider is actually running, only the
+provider-agnostic `LLMRequest`/`LLMResponse` contract. Two providers are currently implemented,
+each its own module under `querymind.llm.providers`, sharing no provider-specific logic:
+
+| Provider | Module | API called |
+|---|---|---|
+| Anthropic Claude (default) | `querymind.llm.providers.claude` | Messages API, `/v1/messages` |
+| Groq | `querymind.llm.providers.groq` | Chat Completions API (OpenAI-compatible), `/chat/completions` |
+
+Switching providers is purely a `.env`/environment-variable change — no code change, no redeploy
+beyond restarting the process. Set these (see `.env.example` for both providers' full example
+blocks):
+
+```bash
+LLM_PROVIDER=claude   # or: groq
+LLM_MODEL=claude-sonnet-5   # a model id valid for whichever provider LLM_PROVIDER selects
+LLM_API_KEY=          # that provider's real API key -- never hardcoded, never logged
+# LLM_BASE_URL=       # optional; each provider has its own correct default when left unset
+```
+
+`LLM_BASE_URL` only needs setting to override a provider's own default (e.g. a proxy, or pinning
+a specific API version) — leaving it unset resolves to the correct URL for whichever
+`LLM_PROVIDER` is configured (`querymind.llm.config.LLMProviderConfig`'s own default-resolution
+logic), so switching providers never means also remembering to update the base URL by hand.
+`LLM_API_KEY` defaults to empty, which the pipeline treats as "not configured" (surfaced by
+`GET /health/diagnostics`'s `llm_configuration` check) rather than a startup failure — an
+application with no LLM key configured can still serve every non-generation route.
+
+Adding a third provider means adding one new sibling module under `querymind.llm.providers`
+(implementing the same `ProviderClient`/`ResponseParser` contracts) and one new entry in
+`querymind.llm.providers.build_llm_provider`'s dispatch table — the single, centralized place
+provider selection happens; nothing elsewhere in the application ever branches on which
+provider is configured.
 
 ## Installation
 
@@ -487,7 +525,7 @@ from querymind.db.engine import create_engine
 from querymind.llm.adapter import LLMAdapter
 from querymind.llm.config import LLMProviderConfig
 from querymind.llm.models import LLMProvider
-from querymind.llm.providers.claude import ClaudeProvider
+from querymind.llm.providers import build_llm_provider
 from querymind.metadata import ColumnDictionary, MetadataExtractor, MetadataRegistry
 from querymind.models.base import Base
 import querymind.models  # noqa: F401 -- registers every ORM model on Base.metadata
@@ -516,8 +554,10 @@ async def main() -> None:
     query_library = QueryLibraryRegistry()
     query_library.load()
 
+    # provider=LLMProvider.GROQ works identically -- build_llm_provider is the one place
+    # that dispatches to the right concrete ProviderClient (see "LLM provider configuration").
     llm_config = LLMProviderConfig(provider=LLMProvider.CLAUDE, model="claude-sonnet-5", api_key=...)
-    llm_adapter = LLMAdapter(ClaudeProvider(llm_config), llm_config)
+    llm_adapter = LLMAdapter(build_llm_provider(llm_config), llm_config)
     validation_engine = SQLValidationEngine(metadata_registry, business_knowledge)
 
     runner = PipelineRunner(

@@ -21,7 +21,6 @@ from pydantic import Field, PostgresDsn, SecretStr, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from querymind.llm.config import (
-    DEFAULT_CLAUDE_BASE_URL,
     DEFAULT_MAX_TOKENS,
     DEFAULT_RETRY_COUNT,
     DEFAULT_TEMPERATURE,
@@ -88,11 +87,20 @@ class Settings(BaseSettings):
     llm_provider: LLMProvider = Field(default=LLMProvider.CLAUDE)
     llm_model: str = Field(default="claude-sonnet-5")
     llm_api_key: SecretStr = Field(default=SecretStr(""))
-    llm_temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=1.0)
+    llm_temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=2.0)
     llm_max_tokens: int = Field(default=DEFAULT_MAX_TOKENS, gt=0)
     llm_timeout_seconds: float = Field(default=DEFAULT_TIMEOUT_SECONDS, gt=0.0)
     llm_retry_count: int = Field(default=DEFAULT_RETRY_COUNT, ge=0)
-    llm_base_url: str = Field(default=DEFAULT_CLAUDE_BASE_URL)
+    # `None`, not `DEFAULT_CLAUDE_BASE_URL` -- left unset, `LLMProviderConfig`'s own
+    # after-validator resolves the correct default for whichever `llm_provider` is actually
+    # configured (see `querymind.llm.config._DEFAULT_BASE_URL_BY_PROVIDER`); hardcoding
+    # Claude's URL here would silently misconfigure any other provider (e.g. Groq) that didn't
+    # also set LLM_BASE_URL explicitly.
+    llm_base_url: str | None = Field(
+        default=None,
+        description="Override the LLM provider's default base URL. Leave unset to use the "
+        "configured provider's own default.",
+    )
 
     # -- Authentication (Phase 22A Part 2) ------------------------------------
     # `jwt_secret_key` defaults to a clearly-labeled placeholder rather than being required --

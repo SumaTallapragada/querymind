@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from querymind.llm.adapter import LLMAdapter
-from querymind.llm.config import LLMProviderConfig
+from querymind.llm.config import DEFAULT_TEMPERATURE, LLMProviderConfig
 from querymind.llm.exceptions import LLMPermanentError, LLMTransientError, RetryExhaustedError
 from querymind.llm.metrics import InMemoryMetricsCollector
 from querymind.llm.models import (
@@ -64,6 +64,49 @@ class TestGenerateBuildsTheRequest:
         assert request.model == config.model
         assert request.temperature == config.temperature
         assert request.max_tokens == config.max_tokens
+
+
+class TestGenerateWithWidenedTemperatureRange:
+    """End-to-end regression lock for the temperature-range fix: a config/`Settings` value above
+    1.0 (legal for Groq and other OpenAI-compatible providers, previously rejected only because
+    `LLMRequest.temperature` still capped at `le=1.0`) must actually reach the provider through
+    `LLMAdapter.generate`, not just construct successfully in isolation.
+    """
+
+    def test_temperature_1_5_reaches_the_provider_through_generate(
+        self, compiled_prompt: CompiledPrompt, groq_config: LLMProviderConfig
+    ) -> None:
+        config = groq_config.model_copy(update={"temperature": 1.5})
+        provider = ScriptedProvider([_response()])
+        adapter = LLMAdapter(provider, config)
+
+        response = adapter.generate(compiled_prompt)
+
+        assert response.content == "SELECT 1;"
+        assert provider.requests[0].temperature == 1.5
+
+    def test_temperature_2_0_reaches_the_provider_through_generate(
+        self, compiled_prompt: CompiledPrompt, groq_config: LLMProviderConfig
+    ) -> None:
+        config = groq_config.model_copy(update={"temperature": 2.0})
+        provider = ScriptedProvider([_response()])
+        adapter = LLMAdapter(provider, config)
+
+        adapter.generate(compiled_prompt)
+
+        assert provider.requests[0].temperature == 2.0
+
+    def test_claude_default_temperature_still_reaches_the_provider_unchanged(
+        self, compiled_prompt: CompiledPrompt, config: LLMProviderConfig
+    ) -> None:
+        # `config` (the Claude fixture) is left at its default temperature -- proves the widened
+        # upper bound didn't change Claude's own effective behavior at all.
+        provider = ScriptedProvider([_response()])
+        adapter = LLMAdapter(provider, config)
+
+        adapter.generate(compiled_prompt)
+
+        assert provider.requests[0].temperature == config.temperature == DEFAULT_TEMPERATURE
 
 
 class TestGenerateSuccess:

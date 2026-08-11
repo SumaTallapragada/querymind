@@ -18,7 +18,12 @@ from __future__ import annotations
 
 from fastapi import APIRouter, status
 
-from querymind.api.dependencies import RateLimitQuery, RequireAnalyst, SQLValidationEngineDep
+from querymind.api.dependencies import (
+    RateLimitQuery,
+    RequireAnalyst,
+    SettingsDep,
+    SQLValidationEngineDep,
+)
 from querymind.api.models.request import SqlInputRequest
 from querymind.llm.models import FinishReason, GenerationMetrics, LLMProvider, TokenUsage
 from querymind.query_library.models import SQLDialect
@@ -35,11 +40,18 @@ router = APIRouter(prefix="/query/validate", tags=["query"])
 _STATEMENT_TYPE_DETECTOR = StatementTypeDetector()
 
 
-def _wrap_as_generated_sql(sql: str, dialect: SQLDialect) -> GeneratedSQL:
+def _wrap_as_generated_sql(sql: str, dialect: SQLDialect, provider: LLMProvider) -> GeneratedSQL:
     """Wrap externally supplied `sql` in a placeholder `GeneratedSQL` envelope.
 
     `llm_metrics`/`statistics` are honest placeholders (zero latency, zero
-    tokens) -- there is no real LLM call to report metrics for.
+    tokens) -- there is no real LLM call to report metrics for. `provider`
+    is the caller's *currently configured* `Settings.llm_provider`, not a
+    hardcoded value -- `GenerationMetrics.provider` has no "n/a" option,
+    and reporting whichever provider isn't actually running (e.g. always
+    claiming Claude when the deployment is configured for Groq) would be
+    a real, if minor, misrepresentation now that more than one provider
+    exists; `model="external"` alongside it is what actually marks this
+    as synthetic, unchanged from before.
     """
     return GeneratedSQL(
         sql=sql,
@@ -47,7 +59,7 @@ def _wrap_as_generated_sql(sql: str, dialect: SQLDialect) -> GeneratedSQL:
         raw_llm_content=sql,
         dialect=dialect,
         llm_metrics=GenerationMetrics(
-            provider=LLMProvider.CLAUDE,
+            provider=provider,
             model="external",
             latency_ms=0.0,
             token_usage=TokenUsage(prompt_tokens=0, completion_tokens=0),
@@ -88,8 +100,9 @@ def _wrap_as_generated_sql(sql: str, dialect: SQLDialect) -> GeneratedSQL:
 async def validate_sql(
     request: SqlInputRequest,
     validation_engine: SQLValidationEngineDep,
+    settings: SettingsDep,
     _analyst: RequireAnalyst,
     _rate_limit: RateLimitQuery,
 ) -> SQLValidationResult:
-    generated_sql = _wrap_as_generated_sql(request.sql, request.dialect)
+    generated_sql = _wrap_as_generated_sql(request.sql, request.dialect, settings.llm_provider)
     return validation_engine.validate(generated_sql)

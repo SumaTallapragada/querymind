@@ -41,7 +41,8 @@ def create_app(
 
     `llm_transport` is test-only (see `querymind.api.lifespan`'s
     docstring) -- always `None` in production, in which case
-    `ApplicationContainer.build` has `ClaudeProvider` open its own real
+    `ApplicationContainer.build` has the configured provider (see
+    `querymind.llm.providers.build_llm_provider`) open its own real
     HTTP transport.
     """
     settings = settings or get_settings()
